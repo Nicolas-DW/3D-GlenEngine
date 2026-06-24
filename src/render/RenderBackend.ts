@@ -19,8 +19,9 @@ export interface FrameData {
 }
 
 /**
- * Contrat commun à WebGL2 et WebGPU. Le moteur ne connaît QUE cette interface :
- * il lui passe des FrameData, le backend se débrouille avec son API GPU.
+ * Contrat d'un backend de rendu (WebGPU aujourd'hui). Le moteur ne connaît QUE
+ * cette interface : il lui passe des FrameData, le backend se débrouille avec
+ * son API GPU.
  *
  * C'est le point d'extension : ajouter un backend = implémenter cette interface,
  * sans toucher au reste du moteur.

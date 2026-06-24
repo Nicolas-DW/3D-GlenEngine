@@ -62,8 +62,8 @@ interface GpuMesh {
 const UNIFORM_STRIDE = 256; // une tranche par objet (aligné GPU)
 
 /**
- * Backend WebGPU. Même contrat que WebGL2Backend, mais API moderne (pipeline
- * pré-construit, command encoder, bind groups à offset dynamique).
+ * Backend WebGPU (seul backend depuis le retrait de WebGL2). API moderne :
+ * pipeline pré-construit, command encoder, bind groups à offset dynamique.
  *
  * Init ASYNCHRONE : requestAdapter/requestDevice prennent du temps. Le backend
  * se construit de façon synchrone, lance l'init en tâche de fond, et renderFrame

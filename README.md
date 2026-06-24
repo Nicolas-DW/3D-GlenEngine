@@ -1,9 +1,11 @@
 # GlenEngine
 
-Moteur 3D web minimal, écrit **from scratch** : rendu WebGL2 (backend WebGPU
-expérimental en option), maths maison, **aucune dépendance runtime**.
-Architecture **GameObject / Component** (style Unity) en TypeScript, servi par
-Vite.
+Moteur 3D web minimal, écrit **from scratch** : rendu **WebGPU** (WGSL), maths
+maison, **aucune dépendance runtime**. Architecture **GameObject / Component**
+(style Unity) en TypeScript, servi par Vite.
+
+> Un navigateur compatible **WebGPU** est requis. Le backend WebGL2 historique a
+> été retiré ; il reste disponible dans l'historique git.
 
 ## Démarrer
 
@@ -16,9 +18,6 @@ npm run typecheck  # vérifie les types sans builder
 
 Au lancement : trois objets qui tournent — un cube texturé (damier), un cube à
 matériau uni, et un quad chargé via le loader glTF.
-
-Pour essayer le backend WebGPU (navigateur compatible requis) : ouvrir avec
-`?backend=webgpu` dans l'URL. À défaut, le moteur utilise WebGL2.
 
 ## Architecture
 
@@ -39,15 +38,12 @@ src/
 │   ├── Component.ts        # base : start() / update(dt)
 │   └── Transform.ts        # position / rotation (quaternion) / échelle
 ├── render/
-│   ├── Renderer.ts         # pilote neutre : choisit un backend, lui passe la frame
-│   ├── RenderBackend.ts    # interface commune WebGL2 / WebGPU
-│   ├── WebGL2Backend.ts    # implémentation WebGL2 (par défaut)
-│   ├── WebGPUBackend.ts    # implémentation WebGPU (opt-in, WGSL)
-│   ├── Shader.ts           # compilation/link d'un programme GLSL (WebGL2)
+│   ├── Renderer.ts         # pilote neutre : assemble la frame, la passe au backend
+│   ├── RenderBackend.ts    # interface d'un backend de rendu
+│   ├── WebGPUBackend.ts    # implémentation WebGPU (WGSL : lumière + texture)
 │   ├── Mesh.ts             # données de géométrie (positions/normales/uv/indices)
 │   ├── Material.ts         # couleur + texture
-│   ├── Texture.ts          # description de texture (image ou pixels)
-│   └── shaders.ts          # GLSL du shader par défaut (lumière + texture)
+│   └── Texture.ts          # description de texture (image ou pixels)
 ├── components/
 │   ├── Camera.ts           # caméra perspective (projection + vue)
 │   ├── MeshRenderer.ts     # rend un objet dessinable (mesh + material)
@@ -68,8 +64,10 @@ Chaque frame : `start()` sur les composants neufs → `update(dt)` sur tous →
 Le `Renderer` est **indépendant du backend** : il cherche la première `Camera`,
 assemble les données neutres de la frame (matrices + liste d'objets) et délègue
 le dessin à un `RenderBackend`. `Mesh` et `Texture` ne portent que des données ;
-chaque backend les téléverse et les met en cache. WebGL2 est le backend complet
-par défaut ; WebGPU (opt-in) couvre géométrie + couleur + éclairage.
+le backend les téléverse et les met en cache. Backend actuel : **WebGPU**
+(géométrie + couleur + éclairage + texture). Le backend WebGL2 a été retiré
+mais reste dans l'historique git, et l'interface `RenderBackend` permet d'en
+rebrancher un sans toucher au reste.
 
 ## Étendre
 
@@ -84,10 +82,10 @@ par défaut ; WebGPU (opt-in) couvre géométrie + couleur + éclairage.
 ## Pistes d'évolution
 
 Faites : quaternions, glTF + textures + matériaux multiples, backend de rendu
-abstrait (WebGL2 + WebGPU opt-in).
+abstrait, migration sur WebGPU (WebGL2 retiré, conservé dans l'historique).
 
 Restent :
 
 - Caméra orbitale contrôlée à la souris.
-- Texturing dans le backend WebGPU (bind group texture + sampler).
+- Mipmaps côté WebGPU (non générés actuellement).
 - Migration vers un ECS si le nombre d'entités explose.
