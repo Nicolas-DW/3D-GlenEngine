@@ -20,20 +20,25 @@ interface Particle {
 }
 
 const SLOP = 0.01; // chevauchement toléré au repos (limite le jitter)
-const ROLL_GAIN = 0.6; // couplage glissement -> rotation
+const SLEEP_LINEAR = 0.04; // vitesse² sous laquelle on amortit fort le linéaire
+const SLEEP_ANGULAR = 0.06; // ω sous laquelle on annule la rotation résiduelle
 
 /**
- * Système physique (étapes 4-7 du plan + frottement/roulement). Pas de temps
- * FIXE ; collisions bille-bille via grille spatiale (broad phase, ~O(n)).
+ * Système physique : pas de temps FIXE, collisions paroi/bille-bille via grille
+ * spatiale (broad phase ~O(n)), et un **solveur d'impulsions au point de contact**
+ * (modèle de frottement avec inertie).
  *
- * En ECS, il balaie chaque frame les entités RigidBody + Transform.
+ * Le frottement agit sur la vitesse de la surface au contact `v + ω × r` : il la
+ * ramène vers zéro en répartissant l'impulsion entre le linéaire (1/m) et
+ * l'angulaire (1/I). C'est ce qui fait à la fois rouler les billes qui glissent
+ * ET dissiper leur rotation quand elles frottent les unes contre les autres.
  */
 export class PhysicsSystem implements System {
   gravity = -9.81;
   restitution = 0.2;
-  damping = 0.995;
-  friction = 0.35;
-  angularDamping = 0.96;
+  damping = 0.995; // air (linéaire)
+  angularDamping = 0.99; // air (rotation)
+  friction = 0.45; // fraction de la vitesse de surface dissipée par contact (0..1)
 
   private readonly particles: Particle[] = [];
   private maxRadius = 0;
@@ -80,7 +85,7 @@ export class PhysicsSystem implements System {
       v.x *= this.damping;
       v.y *= this.damping;
       v.z *= this.damping;
-      if (v.x * v.x + v.y * v.y + v.z * v.z < 0.04) {
+      if (v.x * v.x + v.y * v.y + v.z * v.z < SLEEP_LINEAR) {
         v.x *= 0.85;
         v.y *= 0.85;
         v.z *= 0.85;
@@ -92,27 +97,21 @@ export class PhysicsSystem implements System {
     }
   }
 
+  /** Collisions contre les parois (corps statiques : invMass = 0). */
   private collideBounds(particle: Particle): void {
     const p = particle.transform.position;
-    const v = particle.body.velocity;
-    const r = particle.body.radius;
-    const e = this.restitution;
-    const t = 1 - this.friction;
+    const body = particle.body;
+    const r = body.radius;
     const bd = this.bounds;
 
-    if (p.x - r < bd.minX) { p.x = bd.minX + r; if (v.x < 0) v.x = -v.x * e; v.y *= t; v.z *= t; }
-    else if (p.x + r > bd.maxX) { p.x = bd.maxX - r; if (v.x > 0) v.x = -v.x * e; v.y *= t; v.z *= t; }
+    // Normale dirigée de la bille VERS la paroi (convention du solveur).
+    if (p.x - r < bd.minX) { p.x = bd.minX + r; this.resolveContact(body, null, -1, 0, 0); }
+    else if (p.x + r > bd.maxX) { p.x = bd.maxX - r; this.resolveContact(body, null, 1, 0, 0); }
 
-    if (p.z - r < bd.minZ) { p.z = bd.minZ + r; if (v.z < 0) v.z = -v.z * e; v.x *= t; v.y *= t; }
-    else if (p.z + r > bd.maxZ) { p.z = bd.maxZ - r; if (v.z > 0) v.z = -v.z * e; v.x *= t; v.y *= t; }
+    if (p.z - r < bd.minZ) { p.z = bd.minZ + r; this.resolveContact(body, null, 0, 0, -1); }
+    else if (p.z + r > bd.maxZ) { p.z = bd.maxZ - r; this.resolveContact(body, null, 0, 0, 1); }
 
-    if (p.y - r < bd.minY) {
-      p.y = bd.minY + r;
-      if (v.y < 0) v.y = -v.y * e;
-      v.x *= t;
-      v.z *= t;
-      particle.body.angularVelocity.set(v.z / r, 0, -v.x / r); // roulement sur le sol
-    }
+    if (p.y - r < bd.minY) { p.y = bd.minY + r; this.resolveContact(body, null, 0, -1, 0); }
   }
 
   private integrateOrientation(h: number): void {
@@ -121,7 +120,7 @@ export class PhysicsSystem implements System {
       const w = body.angularVelocity;
       w.x *= d; w.y *= d; w.z *= d;
       const speed = Math.hypot(w.x, w.y, w.z);
-      if (speed < 1e-5) continue;
+      if (speed < SLEEP_ANGULAR) { w.x = 0; w.y = 0; w.z = 0; continue; } // tue le spin résiduel
       this.spinAxis.set(w.x / speed, w.y / speed, w.z / speed);
       this.spinDelta.setFromAxisAngle(this.spinAxis, speed * h);
       this.spinDelta.multiply(transform.rotation);
@@ -156,7 +155,7 @@ export class PhysicsSystem implements System {
             const bucket = grid.get(hashCell(cx + ox, cy + oy, cz + oz));
             if (!bucket) continue;
             for (const j of bucket) {
-              if (j > i) this.resolvePair(list[i], list[j]);
+              if (j > i) this.resolveSpheres(list[i], list[j]);
             }
           }
         }
@@ -164,8 +163,8 @@ export class PhysicsSystem implements System {
     }
   }
 
-  /** Collision entre deux billes : normale (restitution) + tangentielle (frottement + roulement). */
-  private resolvePair(a: Particle, b: Particle): void {
+  /** Résout une paire de billes : dépénétration pondérée + impulsion de contact. */
+  private resolveSpheres(a: Particle, b: Particle): void {
     const pa = a.transform.position;
     const pb = b.transform.position;
     const dx = pb.x - pa.x;
@@ -180,41 +179,92 @@ export class PhysicsSystem implements System {
     const ny = dy / dist;
     const nz = dz / dist;
 
-    const corr = Math.max(0, minDist - dist - SLOP) * 0.5;
-    pa.x -= nx * corr; pa.y -= ny * corr; pa.z -= nz * corr;
-    pb.x += nx * corr; pb.y += ny * corr; pb.z += nz * corr;
+    // Dépénétration répartie selon l'inverse de masse (le plus léger bouge plus).
+    const imA = a.body.invMass;
+    const imB = b.body.invMass;
+    const corr = Math.max(0, minDist - dist - SLOP) / (imA + imB);
+    pa.x -= nx * corr * imA; pa.y -= ny * corr * imA; pa.z -= nz * corr * imA;
+    pb.x += nx * corr * imB; pb.y += ny * corr * imB; pb.z += nz * corr * imB;
 
-    const va = a.body.velocity;
-    const vb = b.body.velocity;
+    this.resolveContact(a.body, b.body, nx, ny, nz);
+  }
 
-    const vn = (vb.x - va.x) * nx + (vb.y - va.y) * ny + (vb.z - va.z) * nz;
-    if (vn < 0) {
-      const jn = (-(1 + this.restitution) * vn) / 2;
-      va.x -= jn * nx; va.y -= jn * ny; va.z -= jn * nz;
-      vb.x += jn * nx; vb.y += jn * ny; vb.z += jn * nz;
+  /**
+   * Solveur d'impulsions pour UN contact. `n` est unitaire, dirigée de A vers B
+   * (ou vers la paroi si `b === null`, traité comme statique : invMass = 0).
+   *
+   * 1. Impulsion normale (restitution). Pour des sphères, le point de contact est
+   *    sur la ligne des centres : `r × n = 0`, donc l'angulaire n'intervient pas
+   *    dans le normal.
+   * 2. Impulsion tangentielle (frottement) : on vise la vitesse de surface au
+   *    contact `v + ω × r`. On en retire une fraction `friction`, répartie entre
+   *    linéaire et angulaire via la masse effective tangentielle `1/m + r²/I`.
+   */
+  private resolveContact(a: RigidBody, b: RigidBody | null, nx: number, ny: number, nz: number): void {
+    const ra = a.radius;
+    const rb = b ? b.radius : 0;
+    const rax = nx * ra, ray = ny * ra, raz = nz * ra; // décalage A -> contact
+    const rbx = -nx * rb, rby = -ny * rb, rbz = -nz * rb; // décalage B -> contact
+
+    const av = a.velocity, aw = a.angularVelocity;
+    // Vitesse de surface de A au contact : v + ω × r.
+    const vax = av.x + (aw.y * raz - aw.z * ray);
+    const vay = av.y + (aw.z * rax - aw.x * raz);
+    const vaz = av.z + (aw.x * ray - aw.y * rax);
+
+    let vbx = 0, vby = 0, vbz = 0;
+    const bv = b ? b.velocity : null;
+    const bw = b ? b.angularVelocity : null;
+    if (bv && bw) {
+      vbx = bv.x + (bw.y * rbz - bw.z * rby);
+      vby = bv.y + (bw.z * rbx - bw.x * rbz);
+      vbz = bv.z + (bw.x * rby - bw.y * rbx);
     }
 
-    const rvx = vb.x - va.x;
-    const rvy = vb.y - va.y;
-    const rvz = vb.z - va.z;
-    const rvn = rvx * nx + rvy * ny + rvz * nz;
-    let tx = rvx - rvn * nx;
-    let ty = rvy - rvn * ny;
-    let tz = rvz - rvn * nz;
+    // Vitesse relative au contact (B vue depuis A).
+    const rvx = vbx - vax;
+    const rvy = vby - vay;
+    const rvz = vbz - vaz;
+    const vn = rvx * nx + rvy * ny + rvz * nz;
+
+    const imA = a.invMass, imB = b ? b.invMass : 0;
+    const iiA = a.invInertia, iiB = b ? b.invInertia : 0;
+
+    // --- 1. Impulsion normale (rebond). ---
+    if (vn < 0) {
+      const jn = (-(1 + this.restitution) * vn) / (imA + imB);
+      av.x -= jn * imA * nx; av.y -= jn * imA * ny; av.z -= jn * imA * nz;
+      if (bv) { bv.x += jn * imB * nx; bv.y += jn * imB * ny; bv.z += jn * imB * nz; }
+    }
+
+    // --- 2. Impulsion tangentielle (frottement). ---
+    // Composante tangentielle de la vitesse de surface relative.
+    let tx = rvx - vn * nx;
+    let ty = rvy - vn * ny;
+    let tz = rvz - vn * nz;
     const tl = Math.hypot(tx, ty, tz);
-    if (tl < 1e-5) return;
+    if (tl < 1e-6) return;
     tx /= tl; ty /= tl; tz /= tl;
 
-    const jt = this.friction * tl * 0.5;
-    va.x += tx * jt; va.y += ty * jt; va.z += tz * jt;
-    vb.x -= tx * jt; vb.y -= ty * jt; vb.z -= tz * jt;
+    // Masse effective tangentielle : 1/m + r²/I de chaque corps (|r × t| = r).
+    const kt = imA + imB + iiA * ra * ra + iiB * rb * rb;
+    const jt = (tl / kt) * this.friction; // on dissipe une fraction de la vitesse de surface
 
-    const cx = ny * tz - nz * ty;
-    const cy = nz * tx - nx * tz;
-    const cz = nx * ty - ny * tx;
-    const g = (tl * ROLL_GAIN) / a.body.radius;
-    a.body.angularVelocity.x += cx * g; a.body.angularVelocity.y += cy * g; a.body.angularVelocity.z += cz * g;
-    b.body.angularVelocity.x += cx * g; b.body.angularVelocity.y += cy * g; b.body.angularVelocity.z += cz * g;
+    // Impulsion P sur B (et −P sur A), dirigée pour réduire la vitesse tangentielle.
+    const px = -jt * tx, py = -jt * ty, pz = -jt * tz;
+
+    // A reçoit −P (linéaire + couple ω -= 1/I · (r × P)).
+    av.x -= imA * px; av.y -= imA * py; av.z -= imA * pz;
+    aw.x -= iiA * (ray * pz - raz * py);
+    aw.y -= iiA * (raz * px - rax * pz);
+    aw.z -= iiA * (rax * py - ray * px);
+
+    if (bv && bw) {
+      bv.x += imB * px; bv.y += imB * py; bv.z += imB * pz;
+      bw.x += iiB * (rby * pz - rbz * py);
+      bw.y += iiB * (rbz * px - rbx * pz);
+      bw.z += iiB * (rbx * py - rby * px);
+    }
   }
 }
 
