@@ -1,18 +1,18 @@
 import { Mat4 } from "../math/Mat4";
+import { Quaternion } from "../math/Quaternion";
 import { Vec3 } from "../math/Vec3";
 import type { GameObject } from "./GameObject";
 
 /**
- * Position / rotation (angles d'Euler en radians) / échelle d'un GameObject.
+ * Position / rotation (quaternion) / échelle d'un GameObject.
  *
- * On utilise des angles d'Euler plutôt que des quaternions : c'est moins
- * robuste (gimbal lock) mais largement suffisant pour un premier jet, et
- * bien plus simple à lire. Le passage aux quaternions est une évolution
- * naturelle plus tard.
+ * La rotation est un quaternion unitaire : pas de gimbal lock, composition par
+ * multiplication, interpolation possible. Pour fixer une orientation de façon
+ * lisible, on passe par `setEuler(x, y, z)` qui convertit des angles en interne.
  */
 export class Transform {
   readonly position = new Vec3(0, 0, 0);
-  readonly rotation = new Vec3(0, 0, 0);
+  readonly rotation = new Quaternion();
   readonly scale = new Vec3(1, 1, 1);
 
   private readonly _local = new Mat4();
@@ -21,6 +21,12 @@ export class Transform {
 
   constructor(readonly gameObject: GameObject) {}
 
+  /** Fixe la rotation à partir d'angles d'Euler (radians), pour le confort. */
+  setEuler(x: number, y: number, z: number): this {
+    this.rotation.setFromEuler(x, y, z);
+    return this;
+  }
+
   /** Matrice locale (TRS) recomposée à la demande. */
   localMatrix(): Mat4 {
     const local = this._local.setTranslation(
@@ -28,10 +34,8 @@ export class Transform {
       this.position.y,
       this.position.z,
     );
-    // Ordre R = Rz * Ry * Rx ; puis T * R * S.
-    local.multiply(this._tmp.setRotationZ(this.rotation.z));
-    local.multiply(this._tmp.setRotationY(this.rotation.y));
-    local.multiply(this._tmp.setRotationX(this.rotation.x));
+    // T * R * S : une seule matrice de rotation, issue du quaternion.
+    local.multiply(this._tmp.setFromQuaternion(this.rotation));
     local.multiply(this._tmp.setScale(this.scale.x, this.scale.y, this.scale.z));
     return local;
   }

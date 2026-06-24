@@ -1,3 +1,4 @@
+import type { Quaternion } from "./Quaternion";
 import { Vec3 } from "./Vec3";
 
 /**
@@ -84,6 +85,25 @@ export class Mat4 {
     this.identity();
     this.data[0] = c; this.data[1] = s;
     this.data[4] = -s; this.data[5] = c;
+    return this;
+  }
+
+  /**
+   * Matrice de rotation à partir d'un quaternion unitaire.
+   * Formule standard : on développe la rotation encodée par (x, y, z, w) en
+   * une matrice 3x3 (logée dans la 4x4), en column-major comme le reste.
+   */
+  setFromQuaternion(q: Quaternion): this {
+    const { x, y, z, w } = q;
+    const x2 = x + x, y2 = y + y, z2 = z + z;
+    const xx = x * x2, xy = x * y2, xz = x * z2;
+    const yy = y * y2, yz = y * z2, zz = z * z2;
+    const wx = w * x2, wy = w * y2, wz = w * z2;
+    const m = this.data;
+    m[0] = 1 - (yy + zz); m[1] = xy + wz;       m[2] = xz - wy;       m[3] = 0;
+    m[4] = xy - wz;       m[5] = 1 - (xx + zz); m[6] = yz + wx;       m[7] = 0;
+    m[8] = xz + wy;       m[9] = yz - wx;       m[10] = 1 - (xx + yy); m[11] = 0;
+    m[12] = 0; m[13] = 0; m[14] = 0; m[15] = 1;
     return this;
   }
 
