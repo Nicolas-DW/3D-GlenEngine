@@ -1,5 +1,6 @@
-import { GameObject } from "../core/GameObject";
 import { MeshRenderer } from "../components/MeshRenderer";
+import { Transform } from "../core/Transform";
+import type { Entity, World } from "../core/World";
 import { Material } from "../render/Material";
 import { Mesh } from "../render/Mesh";
 import { Texture } from "../render/Texture";
@@ -92,8 +93,11 @@ export interface GltfJson {
 
 // --- API publique. -----------------------------------------------------------
 
-/** Charge un modèle .gltf ou .glb depuis une URL et renvoie son GameObject racine. */
-export async function loadGltf(url: string): Promise<GameObject> {
+/**
+ * Charge un modèle .gltf ou .glb et crée les entités dans le World.
+ * Renvoie toutes les entités créées (la racine est la première).
+ */
+export async function loadGltf(world: World, url: string): Promise<Entity[]> {
   const baseUrl = url.substring(0, url.lastIndexOf("/") + 1);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`glTF introuvable : ${url} (${res.status})`);
@@ -101,68 +105,81 @@ export async function loadGltf(url: string): Promise<GameObject> {
   if (url.toLowerCase().endsWith(".glb")) {
     const { json, bin } = parseGlb(await res.arrayBuffer());
     const buffers = await resolveBuffers(json, baseUrl, bin);
-    return buildGltf(json, buffers, baseUrl);
+    return buildGltf(world, json, buffers, baseUrl);
   }
 
   const json = (await res.json()) as GltfJson;
   const buffers = await resolveBuffers(json, baseUrl, null);
-  return buildGltf(json, buffers, baseUrl);
+  return buildGltf(world, json, buffers, baseUrl);
 }
 
 /**
- * Construit le GameObject racine à partir d'un glTF DÉJÀ parsé et de ses buffers.
- * Séparé de loadGltf pour pouvoir alimenter le loader sans réseau (tests, démo).
+ * Construit les entités à partir d'un glTF DÉJÀ parsé. Séparé de loadGltf pour
+ * pouvoir alimenter le loader sans réseau (tests, démo). Renvoie les entités
+ * créées (entities[0] = racine), pratique pour les décharger ensuite.
  */
 export async function buildGltf(
+  world: World,
   gltf: GltfJson,
   buffers: ArrayBuffer[],
   baseUrl = "",
-): Promise<GameObject> {
-  // 1) Matériaux (peut charger des images -> async).
+): Promise<Entity[]> {
   const materials: Material[] = [];
   for (let i = 0; i < (gltf.materials?.length ?? 0); i++) {
     materials[i] = await buildMaterial(gltf, buffers, baseUrl, i);
   }
   const defaultMaterial = new Material();
+  const created: Entity[] = [];
 
-  // 2) Un GameObject par node, en recréant la hiérarchie.
-  const nodeToGameObject = (nodeIndex: number): GameObject => {
+  const addRenderer = (parent: Transform, prim: GltfPrimitive): void => {
+    const entity = world.create();
+    const transform = world.add(entity, new Transform());
+    transform.parent = parent;
+    const geom = buildPrimitive(gltf, buffers, prim);
+    const mat = prim.material != null ? materials[prim.material] : defaultMaterial;
+    world.add(entity, new MeshRenderer(geom, mat));
+    created.push(entity);
+  };
+
+  const buildNode = (nodeIndex: number, parent: Transform | null): void => {
     const node = required(gltf.nodes, "nodes")[nodeIndex];
-    const go = new GameObject(node.name ?? `node${nodeIndex}`);
+    const entity = world.create();
+    const transform = world.add(entity, new Transform());
+    transform.parent = parent;
+    created.push(entity);
 
-    if (node.translation) go.transform.position.set(...vec3(node.translation));
-    // La rotation glTF est un quaternion [x, y, z, w] : branchement direct.
+    if (node.translation) transform.position.set(...vec3(node.translation));
     if (node.rotation) {
       const [x, y, z, w] = node.rotation;
-      go.transform.rotation.set(x, y, z, w);
+      transform.rotation.set(x, y, z, w); // glTF stocke déjà un quaternion
     }
-    if (node.scale) go.transform.scale.set(...vec3(node.scale));
-    if (node.matrix) {
-      console.warn("glTF: node.matrix non décomposé (TRS attendu) —", node.name);
-    }
+    if (node.scale) transform.scale.set(...vec3(node.scale));
+    if (node.matrix) console.warn("glTF: node.matrix non décomposé (TRS attendu) —", node.name);
 
     if (node.mesh != null) {
       const mesh = required(gltf.meshes, "meshes")[node.mesh];
-      // Plusieurs primitives = plusieurs MeshRenderer sur le MÊME GameObject :
-      // c'est ainsi qu'un objet porte plusieurs matériaux.
-      for (const prim of mesh.primitives) {
+      if (mesh.primitives.length === 1) {
+        const prim = mesh.primitives[0];
         const geom = buildPrimitive(gltf, buffers, prim);
         const mat = prim.material != null ? materials[prim.material] : defaultMaterial;
-        go.addComponent(new MeshRenderer(geom, mat));
+        world.add(entity, new MeshRenderer(geom, mat));
+      } else {
+        // Une entité = un MeshRenderer : les primitives multiples deviennent des
+        // entités enfants (chacune son matériau).
+        for (const prim of mesh.primitives) addRenderer(transform, prim);
       }
     }
 
-    for (const childIndex of node.children ?? []) {
-      go.addChild(nodeToGameObject(childIndex));
-    }
-    return go;
+    for (const childIndex of node.children ?? []) buildNode(childIndex, transform);
   };
 
-  const root = new GameObject("glTF");
+  const root = world.create();
+  const rootTransform = world.add(root, new Transform());
+  created.push(root);
   const scene = gltf.scenes?.[gltf.scene ?? 0];
   const rootNodes = scene?.nodes ?? gltf.nodes?.map((_, i) => i) ?? [];
-  for (const nodeIndex of rootNodes) root.addChild(nodeToGameObject(nodeIndex));
-  return root;
+  for (const nodeIndex of rootNodes) buildNode(nodeIndex, rootTransform);
+  return created;
 }
 
 // --- Géométrie. --------------------------------------------------------------

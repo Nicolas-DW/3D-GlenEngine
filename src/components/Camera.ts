@@ -1,13 +1,11 @@
-import { Component } from "../core/Component";
 import { Mat4 } from "../math/Mat4";
 import { Vec3 } from "../math/Vec3";
 
 /**
- * Caméra perspective. La position vient du Transform de l'hôte ; la caméra
- * regarde `target`. On évite l'inversion de matrice en construisant
- * directement la matrice de vue via lookAt.
+ * Composant caméra perspective (données). La position vient du Transform de
+ * l'entité (passée à viewMatrix) ; on regarde `target`.
  */
-export class Camera extends Component {
+export class Camera {
   fovY = (60 * Math.PI) / 180;
   near = 0.1;
   far = 100;
@@ -21,7 +19,7 @@ export class Camera extends Component {
     return this._proj.setPerspective(this.fovY, aspect, this.near, this.far);
   }
 
-  viewMatrix(): Mat4 {
-    return this._view.setLookAt(this.transform.position, this.target, this.up);
+  viewMatrix(eye: Vec3): Mat4 {
+    return this._view.setLookAt(eye, this.target, this.up);
   }
 }

@@ -1,68 +1,78 @@
 import { Camera } from "./components/Camera";
 import { MeshRenderer } from "./components/MeshRenderer";
-import { OrbitController } from "./components/OrbitController";
 import { Rotator } from "./components/Rotator";
 import { Engine } from "./core/Engine";
-import { GameObject } from "./core/GameObject";
+import { Transform } from "./core/Transform";
+import type { Entity } from "./core/World";
+import { MarblesExperience } from "./experiences/MarblesExperience";
 import { createCube } from "./geometry/cube";
 import { buildGltf, type GltfJson } from "./loaders/GltfLoader";
-import { MarblesExperience } from "./experiences/MarblesExperience";
+import { Vec3 } from "./math/Vec3";
 import { Material } from "./render/Material";
 import { Texture } from "./render/Texture";
+import { OrbitSystem } from "./systems/OrbitSystem";
+import { RotatorSystem } from "./systems/RotatorSystem";
 import { createSidebar } from "./ui/Sidebar";
-import { Vec3 } from "./math/Vec3";
 
-// --- Bootstrap : on monte le moteur sur le canvas. ---
+// --- Bootstrap : moteur ECS + caméra. ---
 const canvas = document.getElementById("app") as HTMLCanvasElement;
 const engine = new Engine(canvas);
+const world = engine.world;
 
-// --- Caméra orbitale : tourne autour de l'origine à la souris / au trackpad. ---
-const cameraObject = new GameObject("Camera");
-cameraObject.addComponent(new Camera());
-const orbit = new OrbitController(canvas, { radius: 7, polar: 0.25 });
-cameraObject.addComponent(orbit);
-engine.scene.add(cameraObject);
+const cameraEntity = world.create();
+world.add(cameraEntity, new Transform());
+world.add(cameraEntity, new Camera());
+const orbit = new OrbitSystem(canvas, cameraEntity, { radius: 7, polar: 0.25 });
+engine.add(orbit);
+engine.add(new RotatorSystem());
 
-// --- Scène de démo (cubes + quad), masquée quand une expérience est lancée. ---
-const demoObjects: GameObject[] = [];
-let demoVisible = true;
-const addDemo = (go: GameObject): void => {
-  demoObjects.push(go);
-  if (demoVisible) engine.scene.add(go);
-};
-const showDemo = (visible: boolean): void => {
-  if (visible === demoVisible) return;
-  demoVisible = visible;
-  for (const go of demoObjects) {
-    if (visible) engine.scene.add(go);
-    else engine.scene.remove(go);
-  }
-};
+// --- Scène de démo (cubes + quad glTF), reconstruite/déchargée à la demande. ---
+let demoEntities: Entity[] = [];
+let demoGen = 0;
 
-// --- (1) Cube TEXTURÉ : damier généré en mémoire (démontre textures). ---
-const checker = Texture.fromPixels(64, 64, makeCheckerboard(64), {
-  filter: "nearest",
-  mipmap: false,
-});
-const texturedCube = new GameObject("CubeTexturé");
-texturedCube.addComponent(new MeshRenderer(createCube(), new Material([1, 1, 1], checker)));
-texturedCube.addComponent(new Rotator());
-addDemo(texturedCube);
+function buildDemo(): void {
+  const gen = ++demoGen;
 
-// --- (2) Cube à MATÉRIAU uni distinct (démontre plusieurs matériaux). ---
-const solidCube = new GameObject("CubeUni");
-solidCube.transform.position.set(2.2, 0, 0);
-solidCube.addComponent(new MeshRenderer(createCube(), new Material([0.95, 0.35, 0.3])));
-solidCube.addComponent(new Rotator(new Vec3(0, -0.6, 0.3)));
-addDemo(solidCube);
+  // (1) Cube texturé (damier procédural).
+  const checker = Texture.fromPixels(64, 64, makeCheckerboard(64), { filter: "nearest", mipmap: false });
+  demoEntities.push(
+    spawnCube(new Vec3(0, 0, 0), new Material([1, 1, 1], checker), new Vec3(0.4, 0.8, 0)),
+  );
 
-// --- (3) Modèle chargé via le GltfLoader (démontre le pipeline glTF). ---
-loadInlineGltfQuad().then((gltfRoot) => {
-  gltfRoot.transform.position.set(-2.2, 0, 0);
-  gltfRoot.addComponent(new Rotator(new Vec3(0, 0.7, 0)));
-  addDemo(gltfRoot);
-});
+  // (2) Cube à matériau uni distinct.
+  demoEntities.push(
+    spawnCube(new Vec3(2.2, 0, 0), new Material([0.95, 0.35, 0.3]), new Vec3(0, -0.6, 0.3)),
+  );
 
+  // (3) Modèle chargé via le GltfLoader (un quad orange).
+  buildGltf(world, inlineQuadGltf(), [inlineQuadBuffer()]).then((entities) => {
+    if (gen !== demoGen) {
+      for (const e of entities) world.destroy(e); // démo rechargée entre-temps
+      return;
+    }
+    const root = entities[0];
+    world.add(root, new Rotator(new Vec3(0, 0.7, 0)));
+    world.get(root, Transform)?.position.set(-2.2, 0, 0);
+    demoEntities.push(...entities);
+  });
+}
+
+function clearDemo(): void {
+  demoGen++; // invalide un chargement glTF encore en cours
+  for (const e of demoEntities) world.destroy(e);
+  demoEntities = [];
+}
+
+function spawnCube(position: Vec3, material: Material, spin: Vec3): Entity {
+  const entity = world.create();
+  const transform = world.add(entity, new Transform());
+  transform.position.copy(position);
+  world.add(entity, new MeshRenderer(createCube(), material));
+  world.add(entity, new Rotator(spin));
+  return entity;
+}
+
+buildDemo();
 engine.start();
 
 // --- Barre d'outils : expériences + réglages caméra. ---
@@ -81,12 +91,12 @@ createSidebar({
     {
       label: marbles.name,
       launch: () => {
-        showDemo(false); // on laisse la place à l'expérience
+        clearDemo();
         marbles.start(engine);
       },
       stop: () => {
         marbles.stop(engine);
-        showDemo(true);
+        buildDemo();
       },
     },
   ],
@@ -119,26 +129,24 @@ function makeCheckerboard(size: number): Uint8Array<ArrayBuffer> {
   return pixels;
 }
 
-/**
- * Construit un glTF minimal (un quad orange) EN MÉMOIRE et le passe au loader.
- * But pédagogique : exercer pour de vrai buffers/bufferViews/accessors/material
- * du GltfLoader, sans dépendre d'un fichier externe.
- */
-function loadInlineGltfQuad(): Promise<GameObject> {
+/** Buffer binaire d'un quad : positions | normales | uv | indices. */
+function inlineQuadBuffer(): ArrayBuffer {
   const positions = [-0.7, -0.7, 0, 0.7, -0.7, 0, 0.7, 0.7, 0, -0.7, 0.7, 0];
   const normals = [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1];
   const uvs = [0, 0, 1, 0, 1, 1, 0, 1];
   const indices = [0, 1, 2, 0, 2, 3];
-
-  // Un seul buffer binaire : positions | normales | uv | indices.
   const buffer = new ArrayBuffer(48 + 48 + 32 + 12);
   new Float32Array(buffer, 0, 12).set(positions);
   new Float32Array(buffer, 48, 12).set(normals);
   new Float32Array(buffer, 96, 8).set(uvs);
   new Uint16Array(buffer, 128, 6).set(indices);
+  return buffer;
+}
 
-  const gltf: GltfJson = {
-    buffers: [{ byteLength: buffer.byteLength }],
+/** glTF minimal décrivant le quad ci-dessus (pour exercer le loader). */
+function inlineQuadGltf(): GltfJson {
+  return {
+    buffers: [{ byteLength: 140 }],
     bufferViews: [
       { buffer: 0, byteOffset: 0, byteLength: 48 },
       { buffer: 0, byteOffset: 48, byteLength: 48 },
@@ -153,20 +161,10 @@ function loadInlineGltfQuad(): Promise<GameObject> {
     ],
     materials: [{ pbrMetallicRoughness: { baseColorFactor: [1.0, 0.55, 0.15, 1] } }],
     meshes: [
-      {
-        primitives: [
-          {
-            attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 },
-            indices: 3,
-            material: 0,
-          },
-        ],
-      },
+      { primitives: [{ attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 }, indices: 3, material: 0 }] },
     ],
     nodes: [{ mesh: 0, name: "QuadGltf" }],
     scenes: [{ nodes: [0] }],
     scene: 0,
   };
-
-  return buildGltf(gltf, [buffer]);
 }

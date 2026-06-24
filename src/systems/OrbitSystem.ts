@@ -1,22 +1,17 @@
-import { Component } from "../core/Component";
+import { Camera } from "../components/Camera";
+import { Transform } from "../core/Transform";
+import type { Entity, System, World } from "../core/World";
 import { Vec3 } from "../math/Vec3";
-import { Camera } from "./Camera";
 
 /**
- * Caméra orbitale pilotée à la souris / au trackpad.
- *
- * Position gardée en coordonnées SPHÉRIQUES (rayon + azimut + élévation) autour
- * d'une cible, reconverties en (x, y, z) chaque frame. Orbiter = changer les
- * angles ; zoomer = le rayon ; déplacer (pan) = bouger la cible (la caméra suit).
+ * Caméra orbitale (système). Garde la position en coordonnées sphériques autour
+ * d'une cible et écrit, à chaque frame, le Transform de l'entité caméra.
  *
  * Contrôles :
- *  - clic gauche + glisser ........ orbite (pivot)
- *  - molette du milieu + glisser ... pan (style 3ds Max : caméra + cible)
+ *  - clic gauche + glisser ........ orbite
+ *  - molette du milieu + glisser ... pan (style 3ds Max)
  *  - glissement 2 doigts (trackpad) ... pan
  *  - pincer / Ctrl + molette ........ zoom
- *
- * Sensibilités réglables à chaud (zoomSensitivity / panSensitivity /
- * rotateSensitivity), exposées par la barre d'outils.
  */
 export interface OrbitOptions {
   target?: Vec3;
@@ -31,12 +26,11 @@ export interface OrbitOptions {
 }
 
 const HALF_PI = Math.PI / 2;
-// Vitesses "à sensibilité 1" ; les multiplicateurs ci-dessous les modulent.
-const BASE_ROTATE = 0.005; // rad / pixel
-const BASE_PAN = 0.0022; // (unités / pixel) / rayon
-const BASE_ZOOM = 0.0015; // exposant / unité de delta
+const BASE_ROTATE = 0.005;
+const BASE_PAN = 0.0022;
+const BASE_ZOOM = 0.0015;
 
-export class OrbitController extends Component {
+export class OrbitSystem implements System {
   readonly target: Vec3;
   zoomSensitivity: number;
   panSensitivity: number;
@@ -48,16 +42,15 @@ export class OrbitController extends Component {
   private readonly minRadius: number;
   private readonly maxRadius: number;
 
-  private camera: Camera | null = null;
-  private activeButton = -1; // 0 = gauche (orbite), 1 = milieu (pan)
+  private activeButton = -1;
   private lastX = 0;
   private lastY = 0;
 
   constructor(
     private readonly element: HTMLElement,
+    private readonly camera: Entity,
     opts: OrbitOptions = {},
   ) {
-    super();
     this.target = opts.target ?? new Vec3(0, 0, 0);
     this.radius = opts.radius ?? 7;
     this.azimuth = opts.azimuth ?? 0;
@@ -67,12 +60,9 @@ export class OrbitController extends Component {
     this.rotateSensitivity = opts.rotateSensitivity ?? 1;
     this.minRadius = opts.minRadius ?? 1.5;
     this.maxRadius = opts.maxRadius ?? 50;
-  }
 
-  override start(): void {
-    this.camera = this.gameObject.getComponent(Camera) ?? null;
     const el = this.element;
-    el.style.touchAction = "none"; // on gère nous-mêmes les gestes
+    el.style.touchAction = "none";
     el.addEventListener("pointerdown", this.onPointerDown);
     el.addEventListener("pointermove", this.onPointerMove);
     el.addEventListener("pointerup", this.onPointerUp);
@@ -81,21 +71,20 @@ export class OrbitController extends Component {
     el.addEventListener("contextmenu", (e) => e.preventDefault());
   }
 
-  override update(): void {
+  update(world: World, _dt: number): void {
+    const transform = world.get(this.camera, Transform);
+    if (!transform) return;
     const off = this.offset();
-    this.transform.position.set(
-      this.target.x + off.x,
-      this.target.y + off.y,
-      this.target.z + off.z,
-    );
-    if (this.camera) this.camera.target.copy(this.target);
+    transform.position.set(this.target.x + off.x, this.target.y + off.y, this.target.z + off.z);
+    const cam = world.get(this.camera, Camera);
+    if (cam) cam.target.copy(this.target);
   }
 
   // --- Entrée. ----------------------------------------------------------------
 
   private readonly onPointerDown = (e: PointerEvent): void => {
     this.activeButton = e.button;
-    if (e.button === 1) e.preventDefault(); // évite l'auto-scroll du clic milieu
+    if (e.button === 1) e.preventDefault();
     this.lastX = e.clientX;
     this.lastY = e.clientY;
     this.element.setPointerCapture(e.pointerId);
@@ -107,11 +96,10 @@ export class OrbitController extends Component {
     const dy = e.clientY - this.lastY;
     this.lastX = e.clientX;
     this.lastY = e.clientY;
-
     if (this.activeButton === 1) {
-      this.pan(dx, dy); // molette du milieu -> déplacement
+      this.pan(dx, dy);
     } else if (this.activeButton === 0) {
-      const k = BASE_ROTATE * this.rotateSensitivity; // clic gauche -> orbite
+      const k = BASE_ROTATE * this.rotateSensitivity;
       this.orbit(dx * k, dy * k);
     }
   };
@@ -124,40 +112,30 @@ export class OrbitController extends Component {
   };
 
   private readonly onWheel = (e: WheelEvent): void => {
-    e.preventDefault(); // empêche scroll/zoom de la page
+    e.preventDefault();
     if (e.ctrlKey) {
-      // Pincer (trackpad) ou Ctrl + molette (souris) -> zoom.
       const k = BASE_ZOOM * this.zoomSensitivity;
       this.radius = clamp(this.radius * Math.exp(e.deltaY * k), this.minRadius, this.maxRadius);
     } else {
-      // Glissement deux doigts (trackpad) -> déplacement.
       this.pan(e.deltaX, e.deltaY);
     }
   };
 
-  /** Orbite : décale azimut/élévation (élévation bornée pour ne pas se retourner). */
   private orbit(dAzimuth: number, dPolar: number): void {
     this.azimuth -= dAzimuth;
     this.polar = clamp(this.polar + dPolar, -HALF_PI + 0.01, HALF_PI - 0.01);
   }
 
-  /**
-   * Pan : déplace la CIBLE dans le plan de la caméra (droite/haut), la caméra
-   * suit puisque sa position dérive de la cible. Échelle proportionnelle au
-   * rayon pour un ressenti constant quel que soit le zoom.
-   */
   private pan(dx: number, dy: number): void {
-    const forward = this.offset().scale(-1).normalized(); // caméra -> cible
+    const forward = this.offset().scale(-1).normalized();
     const right = forward.cross(new Vec3(0, 1, 0)).normalized();
     const up = right.cross(forward).normalized();
     const s = BASE_PAN * this.panSensitivity * this.radius;
-    // "Grab" : glisser à droite déplace la scène à droite (cible vers la gauche).
     this.target.x += (-dx * right.x + dy * up.x) * s;
     this.target.y += (-dx * right.y + dy * up.y) * s;
     this.target.z += (-dx * right.z + dy * up.z) * s;
   }
 
-  /** Décalage caméra par rapport à la cible (sphérique -> cartésien). */
   private offset(): Vec3 {
     const cosP = Math.cos(this.polar);
     return new Vec3(

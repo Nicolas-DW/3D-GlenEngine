@@ -1,5 +1,6 @@
-import type { RigidBody } from "../components/RigidBody";
-import { Component } from "../core/Component";
+import { RigidBody } from "../components/RigidBody";
+import { Transform } from "../core/Transform";
+import type { System, World } from "../core/World";
 import { Quaternion } from "../math/Quaternion";
 import { Vec3 } from "../math/Vec3";
 
@@ -12,47 +13,51 @@ export interface Bounds {
   maxZ: number;
 }
 
-/**
- * Monde physique (étapes 4-7 du plan). C'est un composant « manager » : comme le
- * Renderer parcourt tous les MeshRenderer, le PhysicsWorld traite tous les
- * RigidBody ensemble (nécessaire pour les collisions entre billes).
- *
- * Pas de temps FIXE (sous-pas) : la simulation reste stable et reproductible
- * quel que soit le framerate. Collisions bille-bille via une GRILLE SPATIALE
- * (broad phase) : on ne teste que les billes des cellules voisines → ~O(n) au
- * lieu de O(n²), ce qui débloque la montée en nombre.
- */
+/** Une bille = son corps + son transform (appariés depuis le World). */
+interface Particle {
+  body: RigidBody;
+  transform: Transform;
+}
+
 const SLOP = 0.01; // chevauchement toléré au repos (limite le jitter)
 const ROLL_GAIN = 0.6; // couplage glissement -> rotation
 
-export class PhysicsWorld extends Component {
+/**
+ * Système physique (étapes 4-7 du plan + frottement/roulement). Pas de temps
+ * FIXE ; collisions bille-bille via grille spatiale (broad phase, ~O(n)).
+ *
+ * En ECS, il balaie chaque frame les entités RigidBody + Transform.
+ */
+export class PhysicsSystem implements System {
   gravity = -9.81;
-  restitution = 0.2; // moins de rebond -> se stabilise plus vite
-  damping = 0.995; // amortissement linéaire
-  friction = 0.35; // frottement tangentiel aux contacts
-  angularDamping = 0.96; // amortissement de la rotation
+  restitution = 0.2;
+  damping = 0.995;
+  friction = 0.35;
+  angularDamping = 0.96;
 
-  private readonly bodies: RigidBody[] = [];
+  private readonly particles: Particle[] = [];
   private maxRadius = 0;
-  private readonly grid = new Map<number, number[]>(); // hash de cellule -> indices
+  private readonly grid = new Map<number, number[]>();
   private accumulator = 0;
   private readonly fixedStep = 1 / 120;
 
-  // Scratch réutilisés (zéro allocation par bille/frame).
   private readonly spinDelta = new Quaternion();
   private readonly spinAxis = new Vec3();
 
-  constructor(private readonly bounds: Bounds) {
-    super();
-  }
+  constructor(private readonly bounds: Bounds) {}
 
-  add(body: RigidBody): void {
-    this.bodies.push(body);
-    if (body.radius > this.maxRadius) this.maxRadius = body.radius;
-  }
+  update(world: World, dt: number): void {
+    // Apparier corps + transforms (les entités peuvent apparaître/disparaître).
+    this.particles.length = 0;
+    this.maxRadius = 0;
+    for (const [entity, body] of world.view(RigidBody)) {
+      const transform = world.get(entity, Transform);
+      if (!transform) continue;
+      this.particles.push({ body, transform });
+      if (body.radius > this.maxRadius) this.maxRadius = body.radius;
+    }
 
-  override update(dt: number): void {
-    this.accumulator += Math.min(dt, 0.05); // borne anti-spirale après un lag
+    this.accumulator += Math.min(dt, 0.05);
     let guard = 0;
     while (this.accumulator >= this.fixedStep && guard++ < 8) {
       this.step(this.fixedStep);
@@ -62,42 +67,35 @@ export class PhysicsWorld extends Component {
 
   private step(h: number): void {
     this.integrate(h);
-    for (const body of this.bodies) this.collideBounds(body);
+    for (const p of this.particles) this.collideBounds(p);
     this.collidePairs();
     this.integrateOrientation(h);
   }
 
-  /** Intégration semi-implicite d'Euler : v += g·h ; p += v·h. */
   private integrate(h: number): void {
     const dv = this.gravity * h;
-    for (const b of this.bodies) {
-      const v = b.velocity;
+    for (const { body, transform } of this.particles) {
+      const v = body.velocity;
       v.y += dv;
       v.x *= this.damping;
       v.y *= this.damping;
       v.z *= this.damping;
-      // Amortissement renforcé à très basse vitesse : aide à s'immobiliser.
       if (v.x * v.x + v.y * v.y + v.z * v.z < 0.04) {
         v.x *= 0.85;
         v.y *= 0.85;
         v.z *= 0.85;
       }
-      const p = b.transform.position;
+      const p = transform.position;
       p.x += v.x * h;
       p.y += v.y * h;
       p.z += v.z * h;
     }
   }
 
-  /**
-   * Collision bille ↔ parois : on repousse à l'intérieur, on amortit la vitesse
-   * normale (restitution), on freine le glissement tangentiel (friction), et au
-   * sol on déduit le roulement sans glissement (ω = (n × v) / r, n = +Y).
-   */
-  private collideBounds(b: RigidBody): void {
-    const p = b.transform.position;
-    const v = b.velocity;
-    const r = b.radius;
+  private collideBounds(particle: Particle): void {
+    const p = particle.transform.position;
+    const v = particle.body.velocity;
+    const r = particle.body.radius;
     const e = this.restitution;
     const t = 1 - this.friction;
     const bd = this.bounds;
@@ -113,39 +111,32 @@ export class PhysicsWorld extends Component {
       if (v.y < 0) v.y = -v.y * e;
       v.x *= t;
       v.z *= t;
-      b.angularVelocity.set(v.z / r, 0, -v.x / r); // roulement sur le sol
+      particle.body.angularVelocity.set(v.z / r, 0, -v.x / r); // roulement sur le sol
     }
   }
 
-  /** Intègre l'orientation des billes depuis leur vitesse angulaire. */
   private integrateOrientation(h: number): void {
     const d = this.angularDamping;
-    for (const b of this.bodies) {
-      const w = b.angularVelocity;
+    for (const { body, transform } of this.particles) {
+      const w = body.angularVelocity;
       w.x *= d; w.y *= d; w.z *= d;
       const speed = Math.hypot(w.x, w.y, w.z);
       if (speed < 1e-5) continue;
       this.spinAxis.set(w.x / speed, w.y / speed, w.z / speed);
       this.spinDelta.setFromAxisAngle(this.spinAxis, speed * h);
-      this.spinDelta.multiply(b.transform.rotation); // delta * rotation (repère monde)
-      b.transform.rotation.copy(this.spinDelta).normalize();
+      this.spinDelta.multiply(transform.rotation);
+      transform.rotation.copy(this.spinDelta).normalize();
     }
   }
 
-  /**
-   * Collisions bille ↔ bille via une grille spatiale (broad phase).
-   * Taille de cellule = diamètre max : deux billes qui se touchent sont
-   * forcément dans la même cellule ou une cellule adjacente → on ne teste que
-   * les 27 cellules voisines au lieu de toutes les paires.
-   */
+  /** Broad phase : grille spatiale (cellule = diamètre max). */
   private collidePairs(): void {
-    const list = this.bodies;
+    const list = this.particles;
     if (list.length < 2) return;
     const cell = 2 * this.maxRadius || 1;
     const grid = this.grid;
     grid.clear();
 
-    // 1) Ranger chaque bille dans sa cellule.
     for (let i = 0; i < list.length; i++) {
       const p = list[i].transform.position;
       const key = hashCell(cellOf(p.x, cell), cellOf(p.y, cell), cellOf(p.z, cell));
@@ -154,10 +145,8 @@ export class PhysicsWorld extends Component {
       else grid.set(key, [i]);
     }
 
-    // 2) Pour chaque bille, ne tester que les voisines (cellules adjacentes).
     for (let i = 0; i < list.length; i++) {
-      const a = list[i];
-      const p = a.transform.position;
+      const p = list[i].transform.position;
       const cx = cellOf(p.x, cell);
       const cy = cellOf(p.y, cell);
       const cz = cellOf(p.z, cell);
@@ -167,7 +156,7 @@ export class PhysicsWorld extends Component {
             const bucket = grid.get(hashCell(cx + ox, cy + oy, cz + oz));
             if (!bucket) continue;
             for (const j of bucket) {
-              if (j > i) this.resolvePair(a, list[j]); // chaque paire une seule fois
+              if (j > i) this.resolvePair(list[i], list[j]);
             }
           }
         }
@@ -175,14 +164,14 @@ export class PhysicsWorld extends Component {
     }
   }
 
-  /** Résolution d'une collision entre deux billes (masses égales). */
-  private resolvePair(a: RigidBody, b: RigidBody): void {
+  /** Collision entre deux billes : normale (restitution) + tangentielle (frottement + roulement). */
+  private resolvePair(a: Particle, b: Particle): void {
     const pa = a.transform.position;
     const pb = b.transform.position;
     const dx = pb.x - pa.x;
     const dy = pb.y - pa.y;
     const dz = pb.z - pa.z;
-    const minDist = a.radius + b.radius;
+    const minDist = a.body.radius + b.body.radius;
     const d2 = dx * dx + dy * dy + dz * dz;
     if (d2 >= minDist * minDist || d2 < 1e-12) return;
 
@@ -191,15 +180,13 @@ export class PhysicsWorld extends Component {
     const ny = dy / dist;
     const nz = dz / dist;
 
-    // Séparer (moitié chacune), en tolérant un petit chevauchement (slop).
     const corr = Math.max(0, minDist - dist - SLOP) * 0.5;
     pa.x -= nx * corr; pa.y -= ny * corr; pa.z -= nz * corr;
     pb.x += nx * corr; pb.y += ny * corr; pb.z += nz * corr;
 
-    const va = a.velocity;
-    const vb = b.velocity;
+    const va = a.body.velocity;
+    const vb = b.body.velocity;
 
-    // 1) Impulsion NORMALE (restitution).
     const vn = (vb.x - va.x) * nx + (vb.y - va.y) * ny + (vb.z - va.z) * nz;
     if (vn < 0) {
       const jn = (-(1 + this.restitution) * vn) / 2;
@@ -207,7 +194,6 @@ export class PhysicsWorld extends Component {
       vb.x += jn * nx; vb.y += jn * ny; vb.z += jn * nz;
     }
 
-    // 2) Frottement TANGENTIEL + roulement (recalcule la vitesse relative).
     const rvx = vb.x - va.x;
     const rvy = vb.y - va.y;
     const rvz = vb.z - va.z;
@@ -219,18 +205,16 @@ export class PhysicsWorld extends Component {
     if (tl < 1e-5) return;
     tx /= tl; ty /= tl; tz /= tl;
 
-    // Amortit le glissement tangentiel (ne peut qu'enlever de l'énergie).
     const jt = this.friction * tl * 0.5;
     va.x += tx * jt; va.y += ty * jt; va.z += tz * jt;
     vb.x -= tx * jt; vb.y -= ty * jt; vb.z -= tz * jt;
 
-    // Induit la rotation : ω ∝ (n × t) * vitesse de glissement / rayon.
     const cx = ny * tz - nz * ty;
     const cy = nz * tx - nx * tz;
     const cz = nx * ty - ny * tx;
-    const g = (tl * ROLL_GAIN) / a.radius;
-    a.angularVelocity.x += cx * g; a.angularVelocity.y += cy * g; a.angularVelocity.z += cz * g;
-    b.angularVelocity.x += cx * g; b.angularVelocity.y += cy * g; b.angularVelocity.z += cz * g;
+    const g = (tl * ROLL_GAIN) / a.body.radius;
+    a.body.angularVelocity.x += cx * g; a.body.angularVelocity.y += cy * g; a.body.angularVelocity.z += cz * g;
+    b.body.angularVelocity.x += cx * g; b.body.angularVelocity.y += cy * g; b.body.angularVelocity.z += cz * g;
   }
 }
 
@@ -238,7 +222,6 @@ function cellOf(coord: number, cell: number): number {
   return Math.floor(coord / cell);
 }
 
-/** Hash spatial entier d'une cellule (évite d'allouer une chaîne par bille/frame). */
 function hashCell(x: number, y: number, z: number): number {
   return (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
 }

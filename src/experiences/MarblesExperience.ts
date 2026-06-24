@@ -1,10 +1,11 @@
 import { MeshRenderer } from "../components/MeshRenderer";
 import { RigidBody } from "../components/RigidBody";
 import type { Engine } from "../core/Engine";
-import { GameObject } from "../core/GameObject";
+import { Transform } from "../core/Transform";
+import type { Entity, World } from "../core/World";
 import { createCube } from "../geometry/cube";
 import { createSphere } from "../geometry/sphere";
-import { PhysicsWorld, type Bounds } from "../physics/PhysicsWorld";
+import { PhysicsSystem } from "../systems/PhysicsSystem";
 import { Material } from "../render/Material";
 import { Texture } from "../render/Texture";
 import type { Experience } from "./Experience";
@@ -13,73 +14,68 @@ const COUNT = 500; // nombre de billes lâchées (rendu instancié : 1 seul draw
 
 /**
  * Réceptacle de billes : une boîte ouverte dans laquelle tombent des billes
- * gérées par le PhysicsWorld (gravité + collisions parois + collisions
- * bille-bille). Étapes 1-7 du plan.
- *
- * Reste pour passer à des milliers de billes : broad phase (grille spatiale)
- * et rendu instancié — cf. plan.
+ * gérées par un PhysicsSystem (gravité, collisions paroi/bille-bille, frottement
+ * + roulement, broad phase).
  */
 export class MarblesExperience implements Experience {
   readonly name = "Réceptacle de billes";
-  private readonly objects: GameObject[] = [];
+  private readonly entities: Entity[] = [];
+  private physics: PhysicsSystem | null = null;
 
   start(engine: Engine): void {
-    if (this.objects.length) return; // déjà lancée
+    if (this.entities.length) return; // déjà lancée
+    const world = engine.world;
 
     const size = 6;
     const height = 4;
     const thick = 0.25;
-    this.buildContainer(engine, size, height, thick);
+    this.buildContainer(world, size, height, thick);
 
-    // Limites internes (faces intérieures des murs) ; sommet ouvert.
     const inner = size / 2 - thick / 2;
-    const bounds: Bounds = {
+    this.physics = new PhysicsSystem({
       minX: -inner,
       maxX: inner,
       minY: -height / 2 + thick / 2,
       minZ: -inner,
       maxZ: inner,
-    };
+    });
+    engine.add(this.physics);
 
-    const physicsGO = new GameObject("Physics");
-    const world = new PhysicsWorld(bounds);
-    physicsGO.addComponent(world);
-    this.add(engine, physicsGO);
-
-    this.spawnMarbles(engine, world, inner, height / 2);
+    this.spawnMarbles(world, inner, height / 2);
   }
 
   stop(engine: Engine): void {
-    for (const go of this.objects) engine.scene.remove(go);
-    this.objects.length = 0;
+    if (this.physics) {
+      engine.remove(this.physics);
+      this.physics = null;
+    }
+    for (const entity of this.entities) engine.world.destroy(entity);
+    this.entities.length = 0;
   }
 
   // --- Construction. ----------------------------------------------------------
 
-  private buildContainer(engine: Engine, size: number, height: number, thick: number): void {
+  private buildContainer(world: World, size: number, height: number, thick: number): void {
     const mesh = createCube();
     const material = new Material([0.55, 0.6, 0.72]);
 
-    const wall = (
-      name: string,
-      position: [number, number, number],
-      scale: [number, number, number],
-    ): void => {
-      const go = new GameObject(name);
-      go.transform.position.set(...position);
-      go.transform.scale.set(...scale);
-      go.addComponent(new MeshRenderer(mesh, material));
-      this.add(engine, go);
+    const wall = (position: [number, number, number], scale: [number, number, number]): void => {
+      const entity = world.create();
+      const transform = world.add(entity, new Transform());
+      transform.position.set(...position);
+      transform.scale.set(...scale);
+      world.add(entity, new MeshRenderer(mesh, material));
+      this.entities.push(entity);
     };
 
-    wall("sol", [0, -height / 2, 0], [size, thick, size]);
-    wall("mur +X", [size / 2, 0, 0], [thick, height, size]);
-    wall("mur -X", [-size / 2, 0, 0], [thick, height, size]);
-    wall("mur +Z", [0, 0, size / 2], [size, height, thick]);
-    wall("mur -Z", [0, 0, -size / 2], [size, height, thick]);
+    wall([0, -height / 2, 0], [size, thick, size]);
+    wall([size / 2, 0, 0], [thick, height, size]);
+    wall([-size / 2, 0, 0], [thick, height, size]);
+    wall([0, 0, size / 2], [size, height, thick]);
+    wall([0, 0, -size / 2], [size, height, thick]);
   }
 
-  private spawnMarbles(engine: Engine, world: PhysicsWorld, inner: number, top: number): void {
+  private spawnMarbles(world: World, inner: number, top: number): void {
     const radius = 0.3;
     const mesh = createSphere(radius, 16, 12); // une seule géométrie, partagée
     const texture = makeMarbleTexture(); // motif partagé : rend le roulement visible
@@ -95,25 +91,21 @@ export class MarblesExperience implements Experience {
 
       const x = -inner + margin + gx * spacing + jitter();
       const z = -inner + margin + gz * spacing + jitter();
-      const y = top + 0.6 + layer * (radius * 2 + 0.3); // empilées au-dessus
+      const y = top + 0.6 + layer * (radius * 2 + 0.3);
 
-      const go = new GameObject(`bille ${i}`);
-      go.transform.position.set(x, y, z);
+      const entity = world.create();
+      const transform = world.add(entity, new Transform());
+      transform.position.set(x, y, z);
+
       const color = hslToRgb(((i * 47) % 360) / 360, 0.6, 0.6);
-      go.addComponent(new MeshRenderer(mesh, new Material(color, texture)));
+      world.add(entity, new MeshRenderer(mesh, new Material(color, texture)));
 
       const body = new RigidBody(radius);
       body.velocity.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
-      go.addComponent(body);
-      world.add(body);
+      world.add(entity, body);
 
-      this.add(engine, go);
+      this.entities.push(entity);
     }
-  }
-
-  private add(engine: Engine, go: GameObject): void {
-    this.objects.push(go);
-    engine.scene.add(go);
   }
 }
 
@@ -124,10 +116,9 @@ function jitter(): number {
 }
 
 /**
- * Damier gris (4×4 cellules) appliqué à toutes les billes. En niveaux de gris,
- * il MODULE la couleur d'instance (gris clair = couleur pleine, gris foncé =
- * couleur assombrie) → le motif révèle la rotation sans masquer la couleur.
- * Mipmappé : exerce la génération de mipmaps du backend WebGPU.
+ * Damier gris (4×4 cellules) partagé par toutes les billes. En niveaux de gris,
+ * il module la couleur d'instance → le motif révèle la rotation sans masquer la
+ * couleur. Mipmappé. Partagé = l'instancing tient (1 draw call).
  */
 function makeMarbleTexture(): Texture {
   const size = 32;
