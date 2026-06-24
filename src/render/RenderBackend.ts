@@ -18,6 +18,13 @@ export interface FrameData {
   items: Renderable[];
 }
 
+/** Compteurs de la dernière frame dessinée (pour le HUD de diagnostic). */
+export interface RenderStats {
+  objects: number; // objets soumis (instances)
+  triangles: number; // triangles effectivement dessinés
+  drawCalls: number; // appels de dessin (groupes instanciés)
+}
+
 /**
  * Contrat d'un backend de rendu (WebGPU aujourd'hui). Le moteur ne connaît QUE
  * cette interface : il lui passe des FrameData, le backend se débrouille avec
@@ -29,6 +36,8 @@ export interface FrameData {
 export interface RenderBackend {
   /** Nom lisible (diagnostic). */
   readonly name: string;
+  /** Compteurs de la dernière frame (objets / triangles / draw calls). */
+  readonly stats: RenderStats;
   /** Adapte la résolution au canvas (DPI, redimensionnement). */
   resize(): void;
   /** Dessine une frame. Peut être un no-op tant qu'un backend async s'initialise. */

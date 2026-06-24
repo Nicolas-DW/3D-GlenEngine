@@ -1,4 +1,4 @@
-import type { FrameData, Renderable, RenderBackend } from "./RenderBackend";
+import type { FrameData, Renderable, RenderBackend, RenderStats } from "./RenderBackend";
 import type { Mesh } from "./Mesh";
 import type { Texture, TextureOptions } from "./Texture";
 
@@ -107,6 +107,7 @@ const INSTANCE_STRIDE = FLOATS_PER_INSTANCE * 4; // octets
  */
 export class WebGPUBackend implements RenderBackend {
   readonly name = "WebGPU";
+  readonly stats: RenderStats = { objects: 0, triangles: 0, drawCalls: 0 };
 
   private device: GPUDevice | null = null;
   private context: GPUCanvasContext | null = null;
@@ -244,6 +245,13 @@ export class WebGPUBackend implements RenderBackend {
 
     // Regrouper par mesh puis texture, et remplir le buffer d'instances.
     const draws = this.buildInstances(device, frame.items);
+
+    // Compteurs de diagnostic (lus par le HUD).
+    let triangles = 0;
+    for (const d of draws) triangles += (d.mesh.indexCount / 3) * d.count;
+    this.stats.objects = frame.items.length;
+    this.stats.drawCalls = draws.length;
+    this.stats.triangles = triangles;
 
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
