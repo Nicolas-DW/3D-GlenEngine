@@ -28,7 +28,8 @@ matériau uni, et un quad chargé via le loader glTF.
 **Barre d'outils** (à droite) :
 
 - **Physique** : gravité, rebond, frottement, amortissements linéaire/angulaire —
-  réglables **en direct** pendant la simulation (et conservés entre deux lancements).
+  réglables **en direct** pendant la simulation (et conservés entre deux lancements) ;
+  plus le **nombre de billes** (50–1500), appliqué au relâchement du curseur.
 - **Caméra** : sensibilités zoom / déplacement / rotation.
 - **Affichage** : interrupteur du **HUD** de diagnostic (coin haut-gauche) — FPS,
   nombre d'objets, de triangles dessinés et de draw calls.
@@ -59,7 +60,7 @@ src/
 │   └── Rotator.ts          # vitesse de rotation (démo)
 ├── systems/                # SYSTÈMES = logique
 │   ├── RenderSystem.ts     # assemble la frame depuis le World, délègue au backend
-│   ├── PhysicsSystem.ts    # gravité, collisions, frottement par impulsions (inertie), broad phase
+│   ├── PhysicsSystem.ts    # solveur d'impulsions itéré (split impulse) + sommeil, broad phase
 │   ├── OrbitSystem.ts      # caméra orbitale souris / trackpad
 │   ├── RotatorSystem.ts    # fait tourner les entités avec un Rotator
 │   └── StatsSystem.ts      # FPS lissé + compteurs de rendu -> HUD
@@ -111,9 +112,10 @@ mesh (1 draw call). Backend actuel : **WebGPU** ; WebGL2 retiré (historique git
 Faites : quaternions, glTF + textures + matériaux multiples, backend de rendu
 abstrait, migration sur WebGPU (WebGL2 retiré, conservé dans l'historique),
 caméra orbitale + pan + sensibilités, barre d'outils, réceptacle de billes
-(physique : gravité, collisions paroi/bille-bille, **frottement par impulsions au
-point de contact avec inertie** — glissement → roulement et dissipation de la
-rotation —, broad phase par grille spatiale, rendu instancié), mipmaps WebGPU,
+(physique : **solveur d'impulsions séquentiel itéré (Gauss-Seidel) + correction
+de position douce (Baumgarte) + mise en sommeil**, frottement avec inertie —
+glissement/roulement, pivotement, dissipation de la rotation —, collisions
+paroi/bille-bille, broad phase par grille spatiale, rendu instancié), mipmaps WebGPU,
 **migration ECS complète**, **stores packés (sparse-set, retrait O(1), itération
 dense)**, **réglages physiques live + HUD de diagnostic (FPS / objets / triangles
 / draw calls)**.

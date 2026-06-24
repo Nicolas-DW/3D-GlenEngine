@@ -10,7 +10,7 @@ import { Material } from "../render/Material";
 import { Texture } from "../render/Texture";
 import type { Experience } from "./Experience";
 
-const COUNT = 500; // nombre de billes lâchées (rendu instancié : 1 seul draw call)
+const DEFAULT_COUNT = 500; // nombre de billes par défaut (rendu instancié : 1 draw call)
 
 /**
  * Réceptacle de billes : une boîte ouverte dans laquelle tombent des billes
@@ -21,6 +21,8 @@ export class MarblesExperience implements Experience {
   readonly name = "Réceptacle de billes";
   /** Paramètres physiques partagés : réglables en direct depuis la barre d'outils. */
   readonly params = defaultPhysicsParams();
+  /** Nombre de billes lâchées (appliqué au prochain (re)lancement). */
+  count = DEFAULT_COUNT;
   private readonly entities: Entity[] = [];
   private physics: PhysicsSystem | null = null;
 
@@ -88,7 +90,7 @@ export class MarblesExperience implements Experience {
     const margin = 0.5;
     const spacing = (inner * 2 - margin * 2) / (cols - 1);
 
-    for (let i = 0; i < COUNT; i++) {
+    for (let i = 0; i < this.count; i++) {
       const layer = Math.floor(i / (cols * cols));
       const cell = i % (cols * cols);
       const gx = cell % cols;

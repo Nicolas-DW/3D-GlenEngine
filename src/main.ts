@@ -84,6 +84,7 @@ engine.start();
 // --- Barre d'outils : expériences + réglages (physique / caméra / affichage). ---
 const marbles = new MarblesExperience();
 const phys = marbles.params; // objet partagé : les sliders agissent en direct
+let marblesRunning = false;
 
 const sensitivity = (label: string, set: (v: number) => void) => ({
   label,
@@ -102,10 +103,12 @@ createSidebar({
       launch: () => {
         clearDemo();
         marbles.start(engine);
+        marblesRunning = true;
       },
       stop: () => {
         marbles.stop(engine);
         buildDemo();
+        marblesRunning = false;
       },
     },
   ],
@@ -119,6 +122,21 @@ createSidebar({
         { label: "Frottement", min: 0, max: 1, step: 0.05, value: phys.friction, format: (v) => `${Math.round(v * 100)} %`, onInput: (v) => (phys.friction = v) },
         { label: "Amortissement linéaire", min: 0.9, max: 1, step: 0.005, value: phys.damping, format: (v) => v.toFixed(3), onInput: (v) => (phys.damping = v) },
         { label: "Amortissement rotation", min: 0.9, max: 1, step: 0.005, value: phys.angularDamping, format: (v) => v.toFixed(3), onInput: (v) => (phys.angularDamping = v) },
+        // Nombre de billes : appliqué au relâchement (re-spawn), pas pendant le drag.
+        {
+          label: "Nombre de billes",
+          min: 50,
+          max: 1500,
+          step: 50,
+          value: marbles.count,
+          format: (v) => String(Math.round(v)),
+          onInput: (v) => (marbles.count = Math.round(v)),
+          onChange: () => {
+            if (!marblesRunning) return;
+            marbles.stop(engine);
+            marbles.start(engine);
+          },
+        },
       ],
     },
     {

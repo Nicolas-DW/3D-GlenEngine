@@ -25,6 +25,8 @@ export interface SidebarSlider {
   /** Mise en forme de la valeur affichée (défaut : nombre brut). */
   format?: (v: number) => string;
   onInput: (value: number) => void;
+  /** Optionnel : déclenché au relâchement (pour les actions coûteuses). */
+  onChange?: (value: number) => void;
 }
 
 export interface SidebarToggle {
@@ -123,6 +125,9 @@ function buildSlider(slider: SidebarSlider): HTMLElement {
     value.textContent = fmt(v);
     slider.onInput(v);
   });
+  if (slider.onChange) {
+    input.addEventListener("change", () => slider.onChange!(Number(input.value)));
+  }
 
   row.append(head, input);
   return row;
