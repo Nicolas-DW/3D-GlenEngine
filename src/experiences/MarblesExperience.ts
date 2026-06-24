@@ -5,7 +5,7 @@ import { Transform } from "../core/Transform";
 import type { Entity, World } from "../core/World";
 import { createCube } from "../geometry/cube";
 import { createSphere } from "../geometry/sphere";
-import { PhysicsSystem } from "../systems/PhysicsSystem";
+import { defaultPhysicsParams, PhysicsSystem } from "../systems/PhysicsSystem";
 import { Material } from "../render/Material";
 import { Texture } from "../render/Texture";
 import type { Experience } from "./Experience";
@@ -19,6 +19,8 @@ const COUNT = 500; // nombre de billes lâchées (rendu instancié : 1 seul draw
  */
 export class MarblesExperience implements Experience {
   readonly name = "Réceptacle de billes";
+  /** Paramètres physiques partagés : réglables en direct depuis la barre d'outils. */
+  readonly params = defaultPhysicsParams();
   private readonly entities: Entity[] = [];
   private physics: PhysicsSystem | null = null;
 
@@ -32,13 +34,16 @@ export class MarblesExperience implements Experience {
     this.buildContainer(world, size, height, thick);
 
     const inner = size / 2 - thick / 2;
-    this.physics = new PhysicsSystem({
-      minX: -inner,
-      maxX: inner,
-      minY: -height / 2 + thick / 2,
-      minZ: -inner,
-      maxZ: inner,
-    });
+    this.physics = new PhysicsSystem(
+      {
+        minX: -inner,
+        maxX: inner,
+        minY: -height / 2 + thick / 2,
+        minZ: -inner,
+        maxZ: inner,
+      },
+      this.params, // objet partagé -> les sliders agissent en direct
+    );
     engine.add(this.physics);
 
     this.spawnMarbles(world, inner, height / 2);

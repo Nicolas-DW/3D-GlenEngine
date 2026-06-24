@@ -24,6 +24,24 @@ const SLEEP_LINEAR = 0.04; // vitesse² sous laquelle on amortit fort le linéai
 const SLEEP_ANGULAR = 0.06; // ω sous laquelle on annule la rotation résiduelle
 
 /**
+ * Paramètres physiques RÉGLABLES, regroupés dans un objet partagé : le système
+ * les lit à chaque sous-pas, l'UI (sliders) les écrit. Comme c'est un objet par
+ * référence, le réglage prend effet en direct et survit aux relances de
+ * l'expérience.
+ */
+export interface PhysicsParams {
+  gravity: number; // m/s² (négatif = vers le bas)
+  restitution: number; // rebond [0..1)
+  damping: number; // amortissement linéaire (multiplicateur/sous-pas, 1 = aucun)
+  angularDamping: number; // amortissement angulaire (idem)
+  friction: number; // fraction de la vitesse de surface dissipée par contact [0..1]
+}
+
+export function defaultPhysicsParams(): PhysicsParams {
+  return { gravity: -9.81, restitution: 0.2, damping: 0.995, angularDamping: 0.99, friction: 0.45 };
+}
+
+/**
  * Système physique : pas de temps FIXE, collisions paroi/bille-bille via grille
  * spatiale (broad phase ~O(n)), et un **solveur d'impulsions au point de contact**
  * (modèle de frottement avec inertie).
@@ -34,12 +52,6 @@ const SLEEP_ANGULAR = 0.06; // ω sous laquelle on annule la rotation résiduell
  * ET dissiper leur rotation quand elles frottent les unes contre les autres.
  */
 export class PhysicsSystem implements System {
-  gravity = -9.81;
-  restitution = 0.2;
-  damping = 0.995; // air (linéaire)
-  angularDamping = 0.99; // air (rotation)
-  friction = 0.45; // fraction de la vitesse de surface dissipée par contact (0..1)
-
   private readonly particles: Particle[] = [];
   private maxRadius = 0;
   private readonly grid = new Map<number, number[]>();
@@ -49,7 +61,10 @@ export class PhysicsSystem implements System {
   private readonly spinDelta = new Quaternion();
   private readonly spinAxis = new Vec3();
 
-  constructor(private readonly bounds: Bounds) {}
+  constructor(
+    private readonly bounds: Bounds,
+    readonly params: PhysicsParams = defaultPhysicsParams(),
+  ) {}
 
   update(world: World, dt: number): void {
     // Apparier corps + transforms (les entités peuvent apparaître/disparaître).
@@ -78,13 +93,14 @@ export class PhysicsSystem implements System {
   }
 
   private integrate(h: number): void {
-    const dv = this.gravity * h;
+    const damping = this.params.damping;
+    const dv = this.params.gravity * h;
     for (const { body, transform } of this.particles) {
       const v = body.velocity;
       v.y += dv;
-      v.x *= this.damping;
-      v.y *= this.damping;
-      v.z *= this.damping;
+      v.x *= damping;
+      v.y *= damping;
+      v.z *= damping;
       if (v.x * v.x + v.y * v.y + v.z * v.z < SLEEP_LINEAR) {
         v.x *= 0.85;
         v.y *= 0.85;
@@ -115,7 +131,7 @@ export class PhysicsSystem implements System {
   }
 
   private integrateOrientation(h: number): void {
-    const d = this.angularDamping;
+    const d = this.params.angularDamping;
     for (const { body, transform } of this.particles) {
       const w = body.angularVelocity;
       w.x *= d; w.y *= d; w.z *= d;
@@ -232,7 +248,7 @@ export class PhysicsSystem implements System {
 
     // --- 1. Impulsion normale (rebond). ---
     if (vn < 0) {
-      const jn = (-(1 + this.restitution) * vn) / (imA + imB);
+      const jn = (-(1 + this.params.restitution) * vn) / (imA + imB);
       av.x -= jn * imA * nx; av.y -= jn * imA * ny; av.z -= jn * imA * nz;
       if (bv) { bv.x += jn * imB * nx; bv.y += jn * imB * ny; bv.z += jn * imB * nz; }
     }
@@ -248,7 +264,7 @@ export class PhysicsSystem implements System {
 
     // Masse effective tangentielle : 1/m + r²/I de chaque corps (|r × t| = r).
     const kt = imA + imB + iiA * ra * ra + iiB * rb * rb;
-    const jt = (tl / kt) * this.friction; // on dissipe une fraction de la vitesse de surface
+    const jt = (tl / kt) * this.params.friction; // on dissipe une fraction de la vitesse de surface
 
     // Impulsion P sur B (et −P sur A), dirigée pour réduire la vitesse tangentielle.
     const px = -jt * tx, py = -jt * ty, pz = -jt * tz;

@@ -27,14 +27,21 @@ export interface SidebarSlider {
   onInput: (value: number) => void;
 }
 
+export interface SidebarToggle {
+  label: string;
+  value: boolean;
+  onChange: (on: boolean) => void;
+}
+
 export interface SidebarSettings {
   title: string;
-  sliders: SidebarSlider[];
+  sliders?: SidebarSlider[];
+  toggles?: SidebarToggle[];
 }
 
 export interface SidebarConfig {
   experiences: SidebarExperience[];
-  settings?: SidebarSettings;
+  settings?: SidebarSettings[];
 }
 
 export function createSidebar(config: SidebarConfig): void {
@@ -43,7 +50,7 @@ export function createSidebar(config: SidebarConfig): void {
   const aside = element("aside", "ge-sidebar");
   aside.append(element("div", "ge-title", "Outils"));
   aside.append(buildExperiences(config.experiences));
-  if (config.settings) aside.append(buildSettings(config.settings));
+  for (const settings of config.settings ?? []) aside.append(buildSettings(settings));
   document.body.append(aside);
 }
 
@@ -80,10 +87,21 @@ function buildSettings(settings: SidebarSettings): HTMLElement {
   });
 
   const list = element("div", "ge-list");
-  for (const slider of settings.sliders) list.append(buildSlider(slider));
+  for (const t of settings.toggles ?? []) list.append(buildToggle(t));
+  for (const slider of settings.sliders ?? []) list.append(buildSlider(slider));
 
   section.append(toggle, list);
   return section;
+}
+
+function buildToggle(toggle: SidebarToggle): HTMLElement {
+  const row = element("label", "ge-toggle-row") as HTMLLabelElement;
+  const input = element("input", "ge-check") as HTMLInputElement;
+  input.type = "checkbox";
+  input.checked = toggle.value;
+  input.addEventListener("change", () => toggle.onChange(input.checked));
+  row.append(input, element("span", "", toggle.label));
+  return row;
 }
 
 function buildSlider(slider: SidebarSlider): HTMLElement {
@@ -148,7 +166,7 @@ const STYLES = `
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   color: #e8ecf4;
   font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  z-index: 10; user-select: none;
+  z-index: 10; user-select: none; overflow-y: auto;
 }
 .ge-title {
   font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
@@ -168,7 +186,7 @@ const STYLES = `
 .ge-list {
   overflow: hidden; max-height: 0; transition: max-height 0.22s ease;
 }
-.ge-section.open .ge-list { max-height: 480px; }
+.ge-section.open .ge-list { max-height: 600px; }
 .ge-item {
   display: block; width: 100%; margin-top: 6px; padding: 9px 12px;
   cursor: pointer; text-align: left; font: inherit; color: inherit;
@@ -182,6 +200,13 @@ const STYLES = `
 .ge-toggle:focus-visible, .ge-item:focus-visible, .ge-range:focus-visible {
   outline: 2px solid #5a8cff; outline-offset: 2px;
 }
+.ge-toggle-row {
+  display: flex; align-items: center; gap: 9px;
+  margin-top: 10px; padding: 8px 12px; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px;
+}
+.ge-toggle-row:hover { background: rgba(255, 255, 255, 0.06); }
+.ge-check { accent-color: #5a8cff; cursor: pointer; width: 15px; height: 15px; }
 .ge-slider { margin-top: 12px; padding: 0 2px; }
 .ge-slider-head {
   display: flex; justify-content: space-between; align-items: baseline;

@@ -25,8 +25,13 @@ matériau uni, et un quad chargé via le loader glTF.
 - molette du milieu + glisser, ou glissement deux doigts (trackpad) → déplacement (pan) ;
 - pincer (trackpad) ou Ctrl + molette → zoom.
 
-Sensibilités zoom / déplacement / rotation réglables dans la barre d'outils
-(section « Caméra »).
+**Barre d'outils** (à droite) :
+
+- **Physique** : gravité, rebond, frottement, amortissements linéaire/angulaire —
+  réglables **en direct** pendant la simulation (et conservés entre deux lancements).
+- **Caméra** : sensibilités zoom / déplacement / rotation.
+- **Affichage** : interrupteur du **HUD** de diagnostic (coin haut-gauche) — FPS,
+  nombre d'objets, de triangles dessinés et de draw calls.
 
 ## Architecture (ECS)
 
@@ -56,7 +61,8 @@ src/
 │   ├── RenderSystem.ts     # assemble la frame depuis le World, délègue au backend
 │   ├── PhysicsSystem.ts    # gravité, collisions, frottement par impulsions (inertie), broad phase
 │   ├── OrbitSystem.ts      # caméra orbitale souris / trackpad
-│   └── RotatorSystem.ts    # fait tourner les entités avec un Rotator
+│   ├── RotatorSystem.ts    # fait tourner les entités avec un Rotator
+│   └── StatsSystem.ts      # FPS lissé + compteurs de rendu -> HUD
 ├── render/
 │   ├── RenderBackend.ts    # interface d'un backend de rendu
 │   ├── WebGPUBackend.ts    # implémentation WebGPU (WGSL, rendu instancié)
@@ -69,7 +75,8 @@ src/
 │   ├── Experience.ts       # interface : start() / stop() une scène jouable
 │   └── MarblesExperience.ts# réceptacle + ~500 billes physiques
 ├── ui/
-│   └── Sidebar.ts          # barre d'outils : expériences + réglages
+│   ├── Sidebar.ts          # barre d'outils : expériences + réglages
+│   └── StatsOverlay.ts     # HUD diagnostic (FPS, objets, triangles, draw calls)
 └── geometry/
     ├── cube.ts             # génère un cube unité
     └── sphere.ts           # génère une sphère UV (les billes)
@@ -108,7 +115,8 @@ caméra orbitale + pan + sensibilités, barre d'outils, réceptacle de billes
 point de contact avec inertie** — glissement → roulement et dissipation de la
 rotation —, broad phase par grille spatiale, rendu instancié), mipmaps WebGPU,
 **migration ECS complète**, **stores packés (sparse-set, retrait O(1), itération
-dense)**.
+dense)**, **réglages physiques live + HUD de diagnostic (FPS / objets / triangles
+/ draw calls)**.
 
 Restent :
 

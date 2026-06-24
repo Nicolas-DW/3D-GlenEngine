@@ -12,7 +12,9 @@ import { Material } from "./render/Material";
 import { Texture } from "./render/Texture";
 import { OrbitSystem } from "./systems/OrbitSystem";
 import { RotatorSystem } from "./systems/RotatorSystem";
+import { StatsSystem } from "./systems/StatsSystem";
 import { createSidebar } from "./ui/Sidebar";
+import { StatsOverlay } from "./ui/StatsOverlay";
 
 // --- Bootstrap : moteur ECS + caméra. ---
 const canvas = document.getElementById("app") as HTMLCanvasElement;
@@ -25,6 +27,10 @@ world.add(cameraEntity, new Camera());
 const orbit = new OrbitSystem(canvas, cameraEntity, { radius: 7, polar: 0.25 });
 engine.add(orbit);
 engine.add(new RotatorSystem());
+
+// HUD de diagnostic (FPS / objets / triangles / draw calls), masqué par défaut.
+const stats = new StatsOverlay();
+engine.add(new StatsSystem(engine.render.backend, stats));
 
 // --- Scène de démo (cubes + quad glTF), reconstruite/déchargée à la demande. ---
 let demoEntities: Entity[] = [];
@@ -75,8 +81,10 @@ function spawnCube(position: Vec3, material: Material, spin: Vec3): Entity {
 buildDemo();
 engine.start();
 
-// --- Barre d'outils : expériences + réglages caméra. ---
+// --- Barre d'outils : expériences + réglages (physique / caméra / affichage). ---
 const marbles = new MarblesExperience();
+const phys = marbles.params; // objet partagé : les sliders agissent en direct
+
 const sensitivity = (label: string, set: (v: number) => void) => ({
   label,
   min: 0.1,
@@ -86,6 +94,7 @@ const sensitivity = (label: string, set: (v: number) => void) => ({
   format: (v: number) => `${v.toFixed(1)}×`,
   onInput: set,
 });
+
 createSidebar({
   experiences: [
     {
@@ -100,14 +109,31 @@ createSidebar({
       },
     },
   ],
-  settings: {
-    title: "Caméra",
-    sliders: [
-      sensitivity("Sensibilité zoom", (v) => (orbit.zoomSensitivity = v)),
-      sensitivity("Sensibilité déplacement", (v) => (orbit.panSensitivity = v)),
-      sensitivity("Sensibilité rotation", (v) => (orbit.rotateSensitivity = v)),
-    ],
-  },
+  settings: [
+    {
+      title: "Physique",
+      sliders: [
+        // Gravité affichée en magnitude positive (stockée négative = vers le bas).
+        { label: "Gravité", min: 0, max: 25, step: 0.1, value: -phys.gravity, format: (v) => `${v.toFixed(2)} m/s²`, onInput: (v) => (phys.gravity = -v) },
+        { label: "Rebond", min: 0, max: 0.9, step: 0.05, value: phys.restitution, format: (v) => v.toFixed(2), onInput: (v) => (phys.restitution = v) },
+        { label: "Frottement", min: 0, max: 1, step: 0.05, value: phys.friction, format: (v) => `${Math.round(v * 100)} %`, onInput: (v) => (phys.friction = v) },
+        { label: "Amortissement linéaire", min: 0.9, max: 1, step: 0.005, value: phys.damping, format: (v) => v.toFixed(3), onInput: (v) => (phys.damping = v) },
+        { label: "Amortissement rotation", min: 0.9, max: 1, step: 0.005, value: phys.angularDamping, format: (v) => v.toFixed(3), onInput: (v) => (phys.angularDamping = v) },
+      ],
+    },
+    {
+      title: "Caméra",
+      sliders: [
+        sensitivity("Sensibilité zoom", (v) => (orbit.zoomSensitivity = v)),
+        sensitivity("Sensibilité déplacement", (v) => (orbit.panSensitivity = v)),
+        sensitivity("Sensibilité rotation", (v) => (orbit.rotateSensitivity = v)),
+      ],
+    },
+    {
+      title: "Affichage",
+      toggles: [{ label: "Statistiques (HUD)", value: stats.isVisible, onChange: (on) => stats.setVisible(on) }],
+    },
+  ],
 });
 
 // --- Helpers de démo. --------------------------------------------------------
