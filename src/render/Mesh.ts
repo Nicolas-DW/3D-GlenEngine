@@ -1,48 +1,27 @@
 /**
- * Géométrie GPU : un VAO encapsulant les positions, les normales et les indices.
- * Les attributs sont fixés aux locations 0 (position) et 1 (normale), en accord
- * avec le vertex shader par défaut.
+ * Géométrie CÔTÉ CPU : juste des tableaux de données, sans aucune ressource GPU.
+ *
+ * Auparavant, Mesh créait directement un VAO WebGL. En vue du backend abstrait
+ * (WebGL2 / WebGPU), on sépare la DONNÉE (ici) de la RESSOURCE GPU (créée et
+ * mise en cache par chaque backend). Un même Mesh peut ainsi être téléversé par
+ * n'importe quel backend.
+ *
+ * Convention d'attributs : 0 = position, 1 = normale, 2 = UV (optionnel).
  */
 export class Mesh {
-  private readonly vao: WebGLVertexArrayObject;
-  readonly indexCount: number;
-
   constructor(
-    private readonly gl: WebGL2RenderingContext,
-    positions: Float32Array,
-    normals: Float32Array,
-    indices: Uint16Array,
-  ) {
-    this.indexCount = indices.length;
+    readonly positions: Float32Array,
+    readonly normals: Float32Array,
+    readonly indices: Uint16Array | Uint32Array,
+    readonly uvs?: Float32Array,
+  ) {}
 
-    const vao = gl.createVertexArray();
-    if (!vao) throw new Error("Impossible de créer le VAO.");
-    this.vao = vao;
-    gl.bindVertexArray(vao);
-
-    this.attribBuffer(0, positions, 3);
-    this.attribBuffer(1, normals, 3);
-
-    const ibo = gl.createBuffer();
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-
-    gl.bindVertexArray(null);
+  get indexCount(): number {
+    return this.indices.length;
   }
 
-  draw(): void {
-    const gl = this.gl;
-    gl.bindVertexArray(this.vao);
-    gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0);
-    gl.bindVertexArray(null);
-  }
-
-  private attribBuffer(location: number, data: Float32Array, size: number): void {
-    const gl = this.gl;
-    const buffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(location);
-    gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+  /** true si les indices sont en 32 bits (gros maillages). */
+  get uint32Indices(): boolean {
+    return this.indices instanceof Uint32Array;
   }
 }

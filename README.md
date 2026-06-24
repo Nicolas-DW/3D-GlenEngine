@@ -1,8 +1,11 @@
 # GlenEngine
 
-Moteur 3D web minimal, écrit **from scratch** : WebGL2 brut, maths maison,
-**aucune dépendance runtime**. Architecture **GameObject / Component** (style
-Unity) en TypeScript, servi par Vite.
+Moteur 3D web minimal, écrit **from scratch** : rendu **WebGPU** (WGSL), maths
+maison, **aucune dépendance runtime**. Architecture **GameObject / Component**
+(style Unity) en TypeScript, servi par Vite.
+
+> Un navigateur compatible **WebGPU** est requis. Le backend WebGL2 historique a
+> été retiré ; il reste disponible dans l'historique git.
 
 ## Démarrer
 
@@ -13,7 +16,8 @@ npm run build      # typecheck + bundle de prod
 npm run typecheck  # vérifie les types sans builder
 ```
 
-Au lancement : un cube bleu éclairé qui tourne sur lui-même.
+Au lancement : trois objets qui tournent — un cube texturé (damier), un cube à
+matériau uni, et un quad chargé via le loader glTF.
 
 ## Architecture
 
@@ -22,25 +26,30 @@ en leur attachant des **Components** qui portent la logique.
 
 ```
 src/
-├── main.ts                 # bootstrap : monte la caméra + le cube
+├── main.ts                 # bootstrap : monte la caméra + la scène de démo
 ├── math/
 │   ├── Vec3.ts             # vecteurs 3D
+│   ├── Quaternion.ts       # rotations (sans gimbal lock)
 │   └── Mat4.ts             # matrices 4x4 (column-major, prêtes pour le GPU)
 ├── core/
 │   ├── Engine.ts           # game loop (requestAnimationFrame)
 │   ├── Scene.ts            # racine + parcours de la hiérarchie
 │   ├── GameObject.ts       # conteneur : transform + components + enfants
 │   ├── Component.ts        # base : start() / update(dt)
-│   └── Transform.ts        # position / rotation / échelle + matrice monde
+│   └── Transform.ts        # position / rotation (quaternion) / échelle
 ├── render/
-│   ├── Renderer.ts         # contexte WebGL2, boucle de dessin
-│   ├── Shader.ts           # compilation/link d'un programme GPU
-│   ├── Mesh.ts             # VAO (positions + normales + indices)
-│   └── shaders.ts          # GLSL du shader par défaut (lumière directionnelle)
+│   ├── Renderer.ts         # pilote neutre : assemble la frame, la passe au backend
+│   ├── RenderBackend.ts    # interface d'un backend de rendu
+│   ├── WebGPUBackend.ts    # implémentation WebGPU (WGSL : lumière + texture)
+│   ├── Mesh.ts             # données de géométrie (positions/normales/uv/indices)
+│   ├── Material.ts         # couleur + texture
+│   └── Texture.ts          # description de texture (image ou pixels)
 ├── components/
 │   ├── Camera.ts           # caméra perspective (projection + vue)
-│   ├── MeshRenderer.ts     # rend un objet dessinable (mesh + couleur)
+│   ├── MeshRenderer.ts     # rend un objet dessinable (mesh + material)
 │   └── Rotator.ts          # démo : fait tourner l'objet
+├── loaders/
+│   └── GltfLoader.ts       # importe des modèles glTF 2.0 (.gltf / .glb)
 └── geometry/
     └── cube.ts             # génère un cube unité
 ```
@@ -52,22 +61,31 @@ Chaque frame : `start()` sur les composants neufs → `update(dt)` sur tous →
 
 ### Rendu
 
-Le `Renderer` cherche la première `Camera` de la scène, configure les matrices
-projection/vue, puis dessine chaque `MeshRenderer` avec sa matrice monde et sa
-couleur.
+Le `Renderer` est **indépendant du backend** : il cherche la première `Camera`,
+assemble les données neutres de la frame (matrices + liste d'objets) et délègue
+le dessin à un `RenderBackend`. `Mesh` et `Texture` ne portent que des données ;
+le backend les téléverse et les met en cache. Backend actuel : **WebGPU**
+(géométrie + couleur + éclairage + texture). Le backend WebGL2 a été retiré
+mais reste dans l'historique git, et l'interface `RenderBackend` permet d'en
+rebrancher un sans toucher au reste.
 
 ## Étendre
 
 - **Nouvel objet** : `new GameObject()` + `addComponent(...)` + `scene.add(...)`.
 - **Nouveau comportement** : crée une classe qui étend `Component` et
   implémente `update(dt)`.
-- **Nouvelle géométrie** : renvoie un `Mesh` (positions, normales, indices),
+- **Nouvelle géométrie** : renvoie un `Mesh` (positions, normales, indices, uv),
   comme `geometry/cube.ts`.
+- **Charger un modèle** : `await loadGltf(url)` renvoie un `GameObject` prêt à
+  ajouter à la scène.
 
 ## Pistes d'évolution
 
-- Quaternions (remplacer les angles d'Euler dans `Transform`).
-- Chargement de modèles (glTF), textures, matériaux multiples.
+Faites : quaternions, glTF + textures + matériaux multiples, backend de rendu
+abstrait, migration sur WebGPU (WebGL2 retiré, conservé dans l'historique).
+
+Restent :
+
 - Caméra orbitale contrôlée à la souris.
-- Backend de rendu abstrait pour brancher WebGPU à côté de WebGL2.
+- Mipmaps côté WebGPU (non générés actuellement).
 - Migration vers un ECS si le nombre d'entités explose.
