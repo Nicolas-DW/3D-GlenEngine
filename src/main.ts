@@ -23,6 +23,22 @@ const orbit = new OrbitController(canvas, { radius: 7, polar: 0.25 });
 cameraObject.addComponent(orbit);
 engine.scene.add(cameraObject);
 
+// --- Scène de démo (cubes + quad), masquée quand une expérience est lancée. ---
+const demoObjects: GameObject[] = [];
+let demoVisible = true;
+const addDemo = (go: GameObject): void => {
+  demoObjects.push(go);
+  if (demoVisible) engine.scene.add(go);
+};
+const showDemo = (visible: boolean): void => {
+  if (visible === demoVisible) return;
+  demoVisible = visible;
+  for (const go of demoObjects) {
+    if (visible) engine.scene.add(go);
+    else engine.scene.remove(go);
+  }
+};
+
 // --- (1) Cube TEXTURÉ : damier généré en mémoire (démontre textures). ---
 const checker = Texture.fromPixels(64, 64, makeCheckerboard(64), {
   filter: "nearest",
@@ -31,20 +47,20 @@ const checker = Texture.fromPixels(64, 64, makeCheckerboard(64), {
 const texturedCube = new GameObject("CubeTexturé");
 texturedCube.addComponent(new MeshRenderer(createCube(), new Material([1, 1, 1], checker)));
 texturedCube.addComponent(new Rotator());
-engine.scene.add(texturedCube);
+addDemo(texturedCube);
 
 // --- (2) Cube à MATÉRIAU uni distinct (démontre plusieurs matériaux). ---
 const solidCube = new GameObject("CubeUni");
 solidCube.transform.position.set(2.2, 0, 0);
 solidCube.addComponent(new MeshRenderer(createCube(), new Material([0.95, 0.35, 0.3])));
 solidCube.addComponent(new Rotator(new Vec3(0, -0.6, 0.3)));
-engine.scene.add(solidCube);
+addDemo(solidCube);
 
 // --- (3) Modèle chargé via le GltfLoader (démontre le pipeline glTF). ---
 loadInlineGltfQuad().then((gltfRoot) => {
   gltfRoot.transform.position.set(-2.2, 0, 0);
   gltfRoot.addComponent(new Rotator(new Vec3(0, 0.7, 0)));
-  engine.scene.add(gltfRoot);
+  addDemo(gltfRoot);
 });
 
 engine.start();
@@ -64,8 +80,14 @@ createSidebar({
   experiences: [
     {
       label: marbles.name,
-      launch: () => marbles.start(engine),
-      stop: () => marbles.stop(engine),
+      launch: () => {
+        showDemo(false); // on laisse la place à l'expérience
+        marbles.start(engine);
+      },
+      stop: () => {
+        marbles.stop(engine);
+        showDemo(true);
+      },
     },
   ],
   settings: {
