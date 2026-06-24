@@ -6,6 +6,7 @@ import { createCube } from "../geometry/cube";
 import { createSphere } from "../geometry/sphere";
 import { PhysicsWorld, type Bounds } from "../physics/PhysicsWorld";
 import { Material } from "../render/Material";
+import { Texture } from "../render/Texture";
 import type { Experience } from "./Experience";
 
 const COUNT = 500; // nombre de billes lâchées (rendu instancié : 1 seul draw call)
@@ -81,6 +82,7 @@ export class MarblesExperience implements Experience {
   private spawnMarbles(engine: Engine, world: PhysicsWorld, inner: number, top: number): void {
     const radius = 0.3;
     const mesh = createSphere(radius, 16, 12); // une seule géométrie, partagée
+    const texture = makeMarbleTexture(); // motif partagé : rend le roulement visible
     const cols = 7;
     const margin = 0.5;
     const spacing = (inner * 2 - margin * 2) / (cols - 1);
@@ -97,7 +99,8 @@ export class MarblesExperience implements Experience {
 
       const go = new GameObject(`bille ${i}`);
       go.transform.position.set(x, y, z);
-      go.addComponent(new MeshRenderer(mesh, new Material(hslToRgb(((i * 47) % 360) / 360, 0.6, 0.6))));
+      const color = hslToRgb(((i * 47) % 360) / 360, 0.6, 0.6);
+      go.addComponent(new MeshRenderer(mesh, new Material(color, texture)));
 
       const body = new RigidBody(radius);
       body.velocity.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
@@ -118,6 +121,30 @@ export class MarblesExperience implements Experience {
 
 function jitter(): number {
   return (Math.random() - 0.5) * 0.15;
+}
+
+/**
+ * Damier gris (4×4 cellules) appliqué à toutes les billes. En niveaux de gris,
+ * il MODULE la couleur d'instance (gris clair = couleur pleine, gris foncé =
+ * couleur assombrie) → le motif révèle la rotation sans masquer la couleur.
+ * Mipmappé : exerce la génération de mipmaps du backend WebGPU.
+ */
+function makeMarbleTexture(): Texture {
+  const size = 32;
+  const cell = size / 4;
+  const pixels = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const on = (Math.floor(x / cell) + Math.floor(y / cell)) % 2 === 0;
+      const g = on ? 255 : 150;
+      const i = (y * size + x) * 4;
+      pixels[i] = g;
+      pixels[i + 1] = g;
+      pixels[i + 2] = g;
+      pixels[i + 3] = 255;
+    }
+  }
+  return Texture.fromPixels(size, size, pixels, { filter: "linear", mipmap: true });
 }
 
 /** HSL -> RGB (composantes 0..1), pour varier la couleur des billes. */

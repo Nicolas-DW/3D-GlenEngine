@@ -1,5 +1,7 @@
 import type { RigidBody } from "../components/RigidBody";
 import { Component } from "../core/Component";
+import { Quaternion } from "../math/Quaternion";
+import { Vec3 } from "../math/Vec3";
 
 /** Limites internes du réceptacle (boîte ouverte : pas de plafond). */
 export interface Bounds {
@@ -23,13 +25,19 @@ export interface Bounds {
 export class PhysicsWorld extends Component {
   gravity = -9.81;
   restitution = 0.35;
-  damping = 0.999; // léger amortissement (aide à se stabiliser)
+  damping = 0.999; // léger amortissement linéaire
+  friction = 0.15; // frottement tangentiel aux contacts (les billes ne glissent plus à l'infini)
+  angularDamping = 0.985; // amortissement de la rotation
 
   private readonly bodies: RigidBody[] = [];
   private maxRadius = 0;
-  private readonly grid = new Map<string, number[]>(); // cellule -> indices de billes
+  private readonly grid = new Map<number, number[]>(); // hash de cellule -> indices
   private accumulator = 0;
   private readonly fixedStep = 1 / 120;
+
+  // Scratch réutilisés (zéro allocation par bille/frame).
+  private readonly spinDelta = new Quaternion();
+  private readonly spinAxis = new Vec3();
 
   constructor(private readonly bounds: Bounds) {
     super();
@@ -53,6 +61,7 @@ export class PhysicsWorld extends Component {
     this.integrate(h);
     for (const body of this.bodies) this.collideBounds(body);
     this.collidePairs();
+    this.integrateOrientation(h);
   }
 
   /** Intégration semi-implicite d'Euler : v += g·h ; p += v·h. */
@@ -70,21 +79,47 @@ export class PhysicsWorld extends Component {
     }
   }
 
-  /** Collision bille ↔ parois : on repousse à l'intérieur et on amortit la vitesse normale. */
+  /**
+   * Collision bille ↔ parois : on repousse à l'intérieur, on amortit la vitesse
+   * normale (restitution), on freine le glissement tangentiel (friction), et au
+   * sol on déduit le roulement sans glissement (ω = (n × v) / r, n = +Y).
+   */
   private collideBounds(b: RigidBody): void {
     const p = b.transform.position;
     const v = b.velocity;
     const r = b.radius;
     const e = this.restitution;
+    const t = 1 - this.friction;
     const bd = this.bounds;
 
-    if (p.x - r < bd.minX) { p.x = bd.minX + r; if (v.x < 0) v.x = -v.x * e; }
-    else if (p.x + r > bd.maxX) { p.x = bd.maxX - r; if (v.x > 0) v.x = -v.x * e; }
+    if (p.x - r < bd.minX) { p.x = bd.minX + r; if (v.x < 0) v.x = -v.x * e; v.y *= t; v.z *= t; }
+    else if (p.x + r > bd.maxX) { p.x = bd.maxX - r; if (v.x > 0) v.x = -v.x * e; v.y *= t; v.z *= t; }
 
-    if (p.y - r < bd.minY) { p.y = bd.minY + r; if (v.y < 0) v.y = -v.y * e; }
+    if (p.z - r < bd.minZ) { p.z = bd.minZ + r; if (v.z < 0) v.z = -v.z * e; v.x *= t; v.y *= t; }
+    else if (p.z + r > bd.maxZ) { p.z = bd.maxZ - r; if (v.z > 0) v.z = -v.z * e; v.x *= t; v.y *= t; }
 
-    if (p.z - r < bd.minZ) { p.z = bd.minZ + r; if (v.z < 0) v.z = -v.z * e; }
-    else if (p.z + r > bd.maxZ) { p.z = bd.maxZ - r; if (v.z > 0) v.z = -v.z * e; }
+    if (p.y - r < bd.minY) {
+      p.y = bd.minY + r;
+      if (v.y < 0) v.y = -v.y * e;
+      v.x *= t;
+      v.z *= t;
+      b.angularVelocity.set(v.z / r, 0, -v.x / r); // roulement sur le sol
+    }
+  }
+
+  /** Intègre l'orientation des billes depuis leur vitesse angulaire. */
+  private integrateOrientation(h: number): void {
+    const d = this.angularDamping;
+    for (const b of this.bodies) {
+      const w = b.angularVelocity;
+      w.x *= d; w.y *= d; w.z *= d;
+      const speed = Math.hypot(w.x, w.y, w.z);
+      if (speed < 1e-5) continue;
+      this.spinAxis.set(w.x / speed, w.y / speed, w.z / speed);
+      this.spinDelta.setFromAxisAngle(this.spinAxis, speed * h);
+      this.spinDelta.multiply(b.transform.rotation); // delta * rotation (repère monde)
+      b.transform.rotation.copy(this.spinDelta).normalize();
+    }
   }
 
   /**
@@ -103,7 +138,7 @@ export class PhysicsWorld extends Component {
     // 1) Ranger chaque bille dans sa cellule.
     for (let i = 0; i < list.length; i++) {
       const p = list[i].transform.position;
-      const key = cellKey(cellOf(p.x, cell), cellOf(p.y, cell), cellOf(p.z, cell));
+      const key = hashCell(cellOf(p.x, cell), cellOf(p.y, cell), cellOf(p.z, cell));
       const bucket = grid.get(key);
       if (bucket) bucket.push(i);
       else grid.set(key, [i]);
@@ -119,7 +154,7 @@ export class PhysicsWorld extends Component {
       for (let ox = -1; ox <= 1; ox++) {
         for (let oy = -1; oy <= 1; oy++) {
           for (let oz = -1; oz <= 1; oz++) {
-            const bucket = grid.get(cellKey(cx + ox, cy + oy, cz + oz));
+            const bucket = grid.get(hashCell(cx + ox, cy + oy, cz + oz));
             if (!bucket) continue;
             for (const j of bucket) {
               if (j > i) this.resolvePair(a, list[j]); // chaque paire une seule fois
@@ -166,6 +201,7 @@ function cellOf(coord: number, cell: number): number {
   return Math.floor(coord / cell);
 }
 
-function cellKey(x: number, y: number, z: number): string {
-  return `${x},${y},${z}`;
+/** Hash spatial entier d'une cellule (évite d'allouer une chaîne par bille/frame). */
+function hashCell(x: number, y: number, z: number): number {
+  return (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
 }

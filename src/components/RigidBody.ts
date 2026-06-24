@@ -9,6 +9,8 @@ import { Vec3 } from "../math/Vec3";
  */
 export class RigidBody extends Component {
   readonly velocity = new Vec3(0, 0, 0);
+  /** Vitesse angulaire (rad/s) ; sert au roulement, intégrée dans l'orientation. */
+  readonly angularVelocity = new Vec3(0, 0, 0);
 
   constructor(public radius = 0.3) {
     super();
