@@ -60,6 +60,25 @@ fn fs(in : VsOut) -> @location(0) vec4<f32> {
 }
 `;
 
+/** Blit plein écran : recopie/filtre une texture (pour générer les mipmaps). */
+const MIP_WGSL = `
+struct VsOut { @builtin(position) pos : vec4<f32>, @location(0) uv : vec2<f32> };
+@vertex
+fn vs(@builtin(vertex_index) i : u32) -> VsOut {
+  var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  var out : VsOut;
+  out.pos = vec4<f32>(p[i], 0.0, 1.0);
+  out.uv = p[i] * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+  return out;
+}
+@group(0) @binding(0) var src : texture_2d<f32>;
+@group(0) @binding(1) var samp : sampler;
+@fragment
+fn fs(in : VsOut) -> @location(0) vec4<f32> {
+  return textureSample(src, samp, in.uv);
+}
+`;
+
 interface GpuMesh {
   positions: GPUBuffer;
   normals: GPUBuffer;
@@ -94,6 +113,8 @@ export class WebGPUBackend implements RenderBackend {
   private pipeline: GPURenderPipeline | null = null;
   private texLayout: GPUBindGroupLayout | null = null;
   private whiteBindGroup: GPUBindGroup | null = null;
+  private mipPipeline: GPURenderPipeline | null = null;
+  private mipSampler: GPUSampler | null = null;
   private depthView: GPUTextureView | null = null;
   private depthTexture: GPUTexture | null = null;
 
@@ -341,10 +362,13 @@ export class WebGPUBackend implements RenderBackend {
 
     const src = texture.source;
     const [width, height] = src.kind === "pixels" ? [src.width, src.height] : imageSize(src.image);
+    const wantMipmap = texture.options.mipmap ?? true;
+    const mipLevels = wantMipmap ? mipLevelCount(width, height) : 1;
 
     const gpuTex = device.createTexture({
       size: [width, height],
       format: "rgba8unorm",
+      mipLevelCount: mipLevels,
       usage:
         GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
@@ -363,6 +387,8 @@ export class WebGPUBackend implements RenderBackend {
         [width, height],
       );
     }
+
+    if (mipLevels > 1) this.generateMipmaps(device, gpuTex, mipLevels);
 
     const bindGroup = this.makeTextureBindGroup(
       device,
@@ -386,6 +412,53 @@ export class WebGPUBackend implements RenderBackend {
       ],
     });
   }
+
+  /**
+   * Génère les mipmaps : WebGPU n'a pas de generateMipmap(), on downsample donc
+   * chaque niveau en rendant un triangle plein écran qui échantillonne (en
+   * linéaire) le niveau précédent.
+   */
+  private generateMipmaps(device: GPUDevice, texture: GPUTexture, levels: number): void {
+    const pipeline = this.ensureMipPipeline(device);
+    const encoder = device.createCommandEncoder();
+    for (let level = 1; level < levels; level++) {
+      const src = texture.createView({ baseMipLevel: level - 1, mipLevelCount: 1 });
+      const dst = texture.createView({ baseMipLevel: level, mipLevelCount: 1 });
+      const bind = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: src },
+          { binding: 1, resource: this.mipSampler! },
+        ],
+      });
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{ view: dst, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: "store" }],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bind);
+      pass.draw(3);
+      pass.end();
+    }
+    device.queue.submit([encoder.finish()]);
+  }
+
+  private ensureMipPipeline(device: GPUDevice): GPURenderPipeline {
+    if (this.mipPipeline) return this.mipPipeline;
+    const module = device.createShaderModule({ code: MIP_WGSL });
+    this.mipPipeline = device.createRenderPipeline({
+      layout: "auto",
+      vertex: { module, entryPoint: "vs" },
+      fragment: { module, entryPoint: "fs", targets: [{ format: "rgba8unorm" }] },
+      primitive: { topology: "triangle-list" },
+    });
+    this.mipSampler = device.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+    return this.mipPipeline;
+  }
 }
 
 /** Crée un GPUBuffer initialisé (taille alignée sur 4 octets, requis par WebGPU). */
@@ -407,7 +480,18 @@ function makeBuffer(
 function samplerDescriptor(opts: TextureOptions): GPUSamplerDescriptor {
   const filter: GPUFilterMode = opts.filter === "nearest" ? "nearest" : "linear";
   const wrap: GPUAddressMode = opts.wrap === "clamp" ? "clamp-to-edge" : "repeat";
-  return { magFilter: filter, minFilter: filter, addressModeU: wrap, addressModeV: wrap };
+  return {
+    magFilter: filter,
+    minFilter: filter,
+    mipmapFilter: "linear",
+    addressModeU: wrap,
+    addressModeV: wrap,
+  };
+}
+
+/** Nombre de niveaux de mip pour une texture w×h (jusqu'au niveau 1×1). */
+function mipLevelCount(width: number, height: number): number {
+  return Math.floor(Math.log2(Math.max(width, height))) + 1;
 }
 
 /** Dimensions d'une source d'image (gère HTMLImageElement et les autres). */
