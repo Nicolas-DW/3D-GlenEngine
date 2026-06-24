@@ -19,6 +19,12 @@ npm run typecheck  # vérifie les types sans builder
 Au lancement : trois objets qui tournent — un cube texturé (damier), un cube à
 matériau uni, et un quad chargé via le loader glTF.
 
+**Contrôles caméra** (souris / trackpad) :
+
+- clic-glisser → orbite autour de la scène ;
+- glissement deux doigts (trackpad) → orbite ;
+- pincer (trackpad) ou Ctrl + molette → zoom.
+
 ## Architecture
 
 Le moteur ne « sait » rien faire par lui-même : on compose des **GameObjects**
@@ -46,6 +52,7 @@ src/
 │   └── Texture.ts          # description de texture (image ou pixels)
 ├── components/
 │   ├── Camera.ts           # caméra perspective (projection + vue)
+│   ├── OrbitController.ts  # caméra orbitale souris / trackpad
 │   ├── MeshRenderer.ts     # rend un objet dessinable (mesh + material)
 │   └── Rotator.ts          # démo : fait tourner l'objet
 ├── loaders/
@@ -82,10 +89,11 @@ rebrancher un sans toucher au reste.
 ## Pistes d'évolution
 
 Faites : quaternions, glTF + textures + matériaux multiples, backend de rendu
-abstrait, migration sur WebGPU (WebGL2 retiré, conservé dans l'historique).
+abstrait, migration sur WebGPU (WebGL2 retiré, conservé dans l'historique),
+caméra orbitale souris / trackpad.
 
 Restent :
 
-- Caméra orbitale contrôlée à la souris.
+- Pan de la caméra (translation latérale de la cible).
 - Mipmaps côté WebGPU (non générés actuellement).
 - Migration vers un ECS si le nombre d'entités explose.

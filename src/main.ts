@@ -1,5 +1,6 @@
 import { Camera } from "./components/Camera";
 import { MeshRenderer } from "./components/MeshRenderer";
+import { OrbitController } from "./components/OrbitController";
 import { Rotator } from "./components/Rotator";
 import { Engine } from "./core/Engine";
 import { GameObject } from "./core/GameObject";
@@ -13,10 +14,10 @@ import { Vec3 } from "./math/Vec3";
 const canvas = document.getElementById("app") as HTMLCanvasElement;
 const engine = new Engine(canvas);
 
-// --- Caméra : reculée pour voir les trois objets alignés. ---
+// --- Caméra orbitale : tourne autour de l'origine à la souris / au trackpad. ---
 const cameraObject = new GameObject("Camera");
-cameraObject.transform.position.set(0, 1.5, 7);
 cameraObject.addComponent(new Camera());
+cameraObject.addComponent(new OrbitController(canvas, { radius: 7, polar: 0.25 }));
 engine.scene.add(cameraObject);
 
 // --- (1) Cube TEXTURÉ : damier généré en mémoire (démontre textures). ---
