@@ -48,6 +48,11 @@ export class Shader {
     this.gl.uniform3f(this.uniformLoc(name), x, y, z);
   }
 
+  /** Pour les samplers (n° d'unité de texture) et les bool (0 / 1). */
+  setInt(name: string, value: number): void {
+    this.gl.uniform1i(this.uniformLoc(name), value);
+  }
+
   private compile(type: number, src: string): WebGLShader {
     const gl = this.gl;
     const shader = gl.createShader(type);

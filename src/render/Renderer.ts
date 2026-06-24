@@ -53,8 +53,16 @@ export class Renderer {
     this.shader.setMat4("uView", camera.viewMatrix().data);
 
     for (const mr of scene.getComponents(MeshRenderer)) {
+      const mat = mr.material;
       this.shader.setMat4("uModel", mr.transform.worldMatrix().data);
-      this.shader.setVec3("uColor", mr.color[0], mr.color[1], mr.color[2]);
+      this.shader.setVec3("uColor", mat.color[0], mat.color[1], mat.color[2]);
+      if (mat.texture) {
+        mat.texture.bind(0);
+        this.shader.setInt("uTexture", 0);
+        this.shader.setInt("uHasTexture", 1);
+      } else {
+        this.shader.setInt("uHasTexture", 0);
+      }
       mr.mesh.draw();
     }
   }

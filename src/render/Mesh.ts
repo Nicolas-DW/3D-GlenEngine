@@ -1,19 +1,24 @@
 /**
- * Géométrie GPU : un VAO encapsulant les positions, les normales et les indices.
- * Les attributs sont fixés aux locations 0 (position) et 1 (normale), en accord
- * avec le vertex shader par défaut.
+ * Géométrie GPU : un VAO encapsulant positions, normales, UV et indices.
+ * Locations des attributs : 0 = position, 1 = normale, 2 = UV (optionnel),
+ * en accord avec le vertex shader par défaut.
  */
 export class Mesh {
   private readonly vao: WebGLVertexArrayObject;
+  private readonly indexType: number;
   readonly indexCount: number;
 
   constructor(
     private readonly gl: WebGL2RenderingContext,
     positions: Float32Array,
     normals: Float32Array,
-    indices: Uint16Array,
+    indices: Uint16Array | Uint32Array,
+    uvs?: Float32Array,
   ) {
     this.indexCount = indices.length;
+    // glTF peut indexer en 16 ou 32 bits selon le nombre de sommets.
+    this.indexType =
+      indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
 
     const vao = gl.createVertexArray();
     if (!vao) throw new Error("Impossible de créer le VAO.");
@@ -22,6 +27,7 @@ export class Mesh {
 
     this.attribBuffer(0, positions, 3);
     this.attribBuffer(1, normals, 3);
+    if (uvs) this.attribBuffer(2, uvs, 2);
 
     const ibo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
@@ -33,7 +39,7 @@ export class Mesh {
   draw(): void {
     const gl = this.gl;
     gl.bindVertexArray(this.vao);
-    gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0);
+    gl.drawElements(gl.TRIANGLES, this.indexCount, this.indexType, 0);
     gl.bindVertexArray(null);
   }
 

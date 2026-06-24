@@ -40,6 +40,13 @@ export function createCube(gl: WebGL2RenderingContext): Mesh {
     }
   }
 
+  // UV : chaque face couvre tout le carré [0,1]² (4 coins, dans l'ordre des sommets).
+  const faceUv = [0, 0, 1, 0, 1, 1, 0, 1];
+  const uvs = new Float32Array(6 * 8);
+  for (let f = 0; f < 6; f++) {
+    for (let k = 0; k < 8; k++) uvs[f * 8 + k] = faceUv[k];
+  }
+
   // 2 triangles par face, sens anti-horaire vu de l'extérieur.
   const indices = new Uint16Array(36);
   for (let f = 0; f < 6; f++) {
@@ -49,5 +56,5 @@ export function createCube(gl: WebGL2RenderingContext): Mesh {
     indices[i + 3] = o; indices[i + 4] = o + 2; indices[i + 5] = o + 3;
   }
 
-  return new Mesh(gl, positions, normals, indices);
+  return new Mesh(gl, positions, normals, indices, uvs);
 }
