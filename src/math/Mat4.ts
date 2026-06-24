@@ -9,7 +9,7 @@ import { Vec3 } from "./Vec3";
  * Indexation column-major : m[col * 4 + row].
  */
 export class Mat4 {
-  readonly data: Float32Array;
+  readonly data: Float32Array<ArrayBuffer>;
 
   constructor() {
     this.data = new Float32Array(16);

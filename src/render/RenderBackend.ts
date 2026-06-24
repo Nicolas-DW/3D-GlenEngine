@@ -6,15 +6,15 @@ import type { Mesh } from "./Mesh";
  * (Données pures : aucun backend n'est supposé.)
  */
 export interface Renderable {
-  model: Float32Array;
+  model: Float32Array<ArrayBuffer>;
   mesh: Mesh;
   material: Material;
 }
 
 /** Tout ce dont un backend a besoin pour dessiner une frame. */
 export interface FrameData {
-  view: Float32Array;
-  projection: Float32Array;
+  view: Float32Array<ArrayBuffer>;
+  projection: Float32Array<ArrayBuffer>;
   items: Renderable[];
 }
 

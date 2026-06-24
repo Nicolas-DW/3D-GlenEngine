@@ -1,39 +1,51 @@
-import type { FrameData, RenderBackend } from "./RenderBackend";
+import type { FrameData, Renderable, RenderBackend } from "./RenderBackend";
 import type { Mesh } from "./Mesh";
 import type { Texture, TextureOptions } from "./Texture";
 
-/** Source WGSL : MVP + éclairage directionnel + texture (équivalent du shader WebGL). */
+/**
+ * Source WGSL : MVP + éclairage + texture, en rendu INSTANCIÉ.
+ * proj/view sont des uniformes globaux ; la matrice modèle (4 colonnes) et la
+ * couleur sont des attributs PAR INSTANCE (locations 3..7).
+ */
 const WGSL = `
-struct Uniforms {
+struct Globals {
   projection : mat4x4<f32>,
   view : mat4x4<f32>,
-  model : mat4x4<f32>,
-  color : vec4<f32>,
 };
-@group(0) @binding(0) var<uniform> u : Uniforms;
+@group(0) @binding(0) var<uniform> g : Globals;
 @group(1) @binding(0) var albedo : texture_2d<f32>;
 @group(1) @binding(1) var albedoSampler : sampler;
+
+struct VsIn {
+  @location(0) position : vec3<f32>,
+  @location(1) normal : vec3<f32>,
+  @location(2) uv : vec2<f32>,
+  // Matrice modèle de l'instance (4 colonnes) + couleur.
+  @location(3) m0 : vec4<f32>,
+  @location(4) m1 : vec4<f32>,
+  @location(5) m2 : vec4<f32>,
+  @location(6) m3 : vec4<f32>,
+  @location(7) color : vec4<f32>,
+};
 
 struct VsOut {
   @builtin(position) clip : vec4<f32>,
   @location(0) normal : vec3<f32>,
   @location(1) uv : vec2<f32>,
+  @location(2) color : vec3<f32>,
 };
 
 @vertex
-fn vs(
-  @location(0) position : vec3<f32>,
-  @location(1) normal : vec3<f32>,
-  @location(2) uv : vec2<f32>,
-) -> VsOut {
+fn vs(in : VsIn) -> VsOut {
+  let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
   var out : VsOut;
-  let world = u.model * vec4<f32>(position, 1.0);
-  out.clip = u.projection * u.view * world;
-  // Notre projection est de convention OpenGL (profondeur NDC dans [-1, 1]).
-  // WebGPU attend [0, 1] : on remappe z, sinon la moitié proche serait clippée.
+  let world = model * vec4<f32>(in.position, 1.0);
+  out.clip = g.projection * g.view * world;
+  // Profondeur OpenGL [-1,1] -> WebGPU [0,1].
   out.clip.z = (out.clip.z + out.clip.w) * 0.5;
-  out.normal = (u.model * vec4<f32>(normal, 0.0)).xyz;
-  out.uv = uv;
+  out.normal = (model * vec4<f32>(in.normal, 0.0)).xyz;
+  out.uv = in.uv;
+  out.color = in.color.rgb;
   return out;
 }
 
@@ -42,10 +54,8 @@ fn fs(in : VsOut) -> @location(0) vec4<f32> {
   let n = normalize(in.normal);
   let lightDir = normalize(vec3<f32>(0.5, 0.8, 0.6));
   let diff = max(dot(n, lightDir), 0.0);
-  // Texture par défaut = blanc 1×1, donc blanc × couleur = couleur : pas besoin
-  // de brancher, on échantillonne toujours (flux uniforme requis par WGSL).
   let albedoColor = textureSample(albedo, albedoSampler, in.uv).rgb;
-  let base = u.color.rgb * albedoColor;
+  let base = in.color * albedoColor; // texture blanche par défaut = couleur seule
   return vec4<f32>(base * (0.25 + 0.75 * diff), 1.0);
 }
 `;
@@ -59,23 +69,22 @@ interface GpuMesh {
   indexFormat: GPUIndexFormat;
 }
 
-const UNIFORM_STRIDE = 256; // une tranche par objet (aligné GPU)
+const FLOATS_PER_INSTANCE = 20; // matrice modèle (16) + couleur (4)
+const INSTANCE_STRIDE = FLOATS_PER_INSTANCE * 4; // octets
 
 /**
- * Backend WebGPU (seul backend depuis le retrait de WebGL2). API moderne :
- * pipeline pré-construit, command encoder, bind groups à offset dynamique.
+ * Backend WebGPU instancié (seul backend depuis le retrait de WebGL2).
  *
- * Init ASYNCHRONE : requestAdapter/requestDevice prennent du temps. Le backend
- * se construit de façon synchrone, lance l'init en tâche de fond, et renderFrame
- * est un no-op tant que `ready` est faux (les toutes premières frames sont
- * simplement noires).
+ * À chaque frame, les objets sont GROUPÉS par (mesh, texture) ; chaque groupe
+ * est dessiné en un seul appel instancié. Des centaines d'objets partageant une
+ * géométrie (les billes) = 1 draw call au lieu de N.
  *
- * Périmètre actuel : géométrie + couleur + éclairage + texturing (bind group
- * texture+sampler, texture blanche par défaut quand le matériau n'en a pas).
- * Limite connue : pas de génération de mipmaps (WebGL2 les génère, pas ici).
+ * Init ASYNCHRONE : renderFrame est un no-op tant que `ready` est faux.
  *
- * NOTE : non validé au runtime dans cet environnement (sans GPU/navigateur) ;
- * vérifié au typecheck. À exécuter dans un navigateur compatible WebGPU.
+ * Limite connue : pas de génération de mipmaps.
+ *
+ * NOTE : vérifié au typecheck, non validé au runtime dans cet environnement
+ * (sans GPU/navigateur). À exécuter dans un navigateur compatible WebGPU.
  */
 export class WebGPUBackend implements RenderBackend {
   readonly name = "WebGPU";
@@ -83,19 +92,19 @@ export class WebGPUBackend implements RenderBackend {
   private device: GPUDevice | null = null;
   private context: GPUCanvasContext | null = null;
   private pipeline: GPURenderPipeline | null = null;
-  private layout: GPUBindGroupLayout | null = null;
   private texLayout: GPUBindGroupLayout | null = null;
   private whiteBindGroup: GPUBindGroup | null = null;
   private depthView: GPUTextureView | null = null;
   private depthTexture: GPUTexture | null = null;
 
-  private uniformBuffer: GPUBuffer | null = null;
-  private bindGroup: GPUBindGroup | null = null;
-  private uniformCapacity = 0;
+  private globalsBuffer: GPUBuffer | null = null;
+  private globalsBindGroup: GPUBindGroup | null = null;
+  private instanceBuffer: GPUBuffer | null = null;
+  private instanceScratch = new Float32Array(0);
+  private instanceCapacity = 0;
 
   private readonly meshes = new WeakMap<Mesh, GpuMesh>();
   private readonly textureBindGroups = new WeakMap<Texture, GPUBindGroup>();
-  private readonly scratch = new Float32Array(UNIFORM_STRIDE / 4);
   private ready = false;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -116,16 +125,21 @@ export class WebGPUBackend implements RenderBackend {
     this.context = context;
 
     const module = device.createShaderModule({ code: WGSL });
-    this.layout = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform", hasDynamicOffset: true },
-        },
-      ],
+
+    // Groupe 0 : uniformes globaux (projection + vue).
+    const globalsLayout = device.createBindGroupLayout({
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } }],
     });
-    // Groupe 1 : la texture du matériau + son sampler.
+    this.globalsBuffer = device.createBuffer({
+      size: 128, // 2 mat4x4
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.globalsBindGroup = device.createBindGroup({
+      layout: globalsLayout,
+      entries: [{ binding: 0, resource: { buffer: this.globalsBuffer } }],
+    });
+
+    // Groupe 1 : texture du matériau + sampler.
     this.texLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
@@ -134,7 +148,7 @@ export class WebGPUBackend implements RenderBackend {
     });
 
     this.pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [this.layout, this.texLayout] }),
+      layout: device.createPipelineLayout({ bindGroupLayouts: [globalsLayout, this.texLayout] }),
       vertex: {
         module,
         entryPoint: "vs",
@@ -142,6 +156,17 @@ export class WebGPUBackend implements RenderBackend {
           { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
           { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
           { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+          {
+            arrayStride: INSTANCE_STRIDE,
+            stepMode: "instance",
+            attributes: [
+              { shaderLocation: 3, offset: 0, format: "float32x4" },
+              { shaderLocation: 4, offset: 16, format: "float32x4" },
+              { shaderLocation: 5, offset: 32, format: "float32x4" },
+              { shaderLocation: 6, offset: 48, format: "float32x4" },
+              { shaderLocation: 7, offset: 64, format: "float32x4" },
+            ],
+          },
         ],
       },
       fragment: { module, entryPoint: "fs", targets: [{ format }] },
@@ -149,18 +174,13 @@ export class WebGPUBackend implements RenderBackend {
       depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
     });
 
-    // Texture blanche 1×1 : utilisée par les matériaux SANS texture (blanc = neutre).
+    // Texture blanche 1×1 : matériaux sans texture (blanc = neutre).
     const white = device.createTexture({
       size: [1, 1],
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
-    device.queue.writeTexture(
-      { texture: white },
-      new Uint8Array([255, 255, 255, 255]),
-      { bytesPerRow: 4 },
-      [1, 1],
-    );
+    device.queue.writeTexture({ texture: white }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1]);
     this.whiteBindGroup = this.makeTextureBindGroup(
       device,
       white.createView(),
@@ -180,7 +200,6 @@ export class WebGPUBackend implements RenderBackend {
       this.canvas.height = h;
     }
     if (!this.device) return;
-    // Le depth buffer doit suivre la taille du canvas.
     this.depthTexture?.destroy();
     this.depthTexture = this.device.createTexture({
       size: [this.canvas.width, this.canvas.height],
@@ -195,24 +214,15 @@ export class WebGPUBackend implements RenderBackend {
     const context = this.context;
     const pipeline = this.pipeline;
     const depthView = this.depthView;
-    if (!this.ready || !device || !context || !pipeline || !depthView) return;
+    const globals = this.globalsBindGroup;
+    if (!this.ready || !device || !context || !pipeline || !depthView || !globals) return;
 
-    const bindGroup = this.ensureUniforms(device, frame.items.length);
+    // Uniformes globaux.
+    device.queue.writeBuffer(this.globalsBuffer!, 0, frame.projection);
+    device.queue.writeBuffer(this.globalsBuffer!, 64, frame.view);
 
-    // Une tranche d'uniformes distincte par objet (sinon tous les draws du pass
-    // liraient la même dernière valeur).
-    for (let i = 0; i < frame.items.length; i++) {
-      const item = frame.items[i];
-      this.scratch.set(frame.projection, 0);
-      this.scratch.set(frame.view, 16);
-      this.scratch.set(item.model, 32);
-      const c = item.material.color;
-      this.scratch[48] = c[0];
-      this.scratch[49] = c[1];
-      this.scratch[50] = c[2];
-      this.scratch[51] = 1;
-      device.queue.writeBuffer(this.uniformBuffer!, i * UNIFORM_STRIDE, this.scratch);
-    }
+    // Regrouper par mesh puis texture, et remplir le buffer d'instances.
+    const draws = this.buildInstances(device, frame.items);
 
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
@@ -233,42 +243,80 @@ export class WebGPUBackend implements RenderBackend {
     });
 
     pass.setPipeline(pipeline);
-    for (let i = 0; i < frame.items.length; i++) {
-      const item = frame.items[i];
-      const gpu = this.uploadMesh(device, item.mesh);
-      const texBind = item.material.texture
-        ? this.uploadTexture(device, item.material.texture)
-        : this.whiteBindGroup!;
-      pass.setBindGroup(0, bindGroup, [i * UNIFORM_STRIDE]);
-      pass.setBindGroup(1, texBind);
+    pass.setBindGroup(0, globals);
+    for (const d of draws) {
+      const gpu = this.uploadMesh(device, d.mesh);
+      pass.setBindGroup(1, d.texture ? this.uploadTexture(device, d.texture) : this.whiteBindGroup!);
       pass.setVertexBuffer(0, gpu.positions);
       pass.setVertexBuffer(1, gpu.normals);
       pass.setVertexBuffer(2, gpu.uvs);
+      pass.setVertexBuffer(3, this.instanceBuffer!, d.first * INSTANCE_STRIDE);
       pass.setIndexBuffer(gpu.indices, gpu.indexFormat);
-      pass.drawIndexed(gpu.indexCount);
+      pass.drawIndexed(gpu.indexCount, d.count); // 1 appel, d.count instances
     }
     pass.end();
     device.queue.submit([encoder.finish()]);
   }
 
-  // --- Ressources. -----------------------------------------------------------
+  // --- Instances. ------------------------------------------------------------
 
-  private ensureUniforms(device: GPUDevice, count: number): GPUBindGroup {
-    if (this.bindGroup && this.uniformCapacity >= count) return this.bindGroup;
-    this.uniformBuffer?.destroy();
-    this.uniformCapacity = Math.max(count, 8);
-    this.uniformBuffer = device.createBuffer({
-      size: UNIFORM_STRIDE * this.uniformCapacity,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.bindGroup = device.createBindGroup({
-      layout: this.layout!,
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuffer, offset: 0, size: UNIFORM_STRIDE } },
-      ],
-    });
-    return this.bindGroup;
+  private buildInstances(
+    device: GPUDevice,
+    items: Renderable[],
+  ): { mesh: Mesh; texture: Texture | null; first: number; count: number }[] {
+    const groups = new Map<Mesh, Map<Texture | null, Renderable[]>>();
+    for (const item of items) {
+      let byTexture = groups.get(item.mesh);
+      if (!byTexture) {
+        byTexture = new Map();
+        groups.set(item.mesh, byTexture);
+      }
+      const texture = item.material.texture ?? null;
+      const bucket = byTexture.get(texture);
+      if (bucket) bucket.push(item);
+      else byTexture.set(texture, [item]);
+    }
+
+    this.ensureInstanceCapacity(device, items.length);
+    const data = this.instanceScratch;
+    const draws: { mesh: Mesh; texture: Texture | null; first: number; count: number }[] = [];
+
+    let index = 0;
+    for (const [mesh, byTexture] of groups) {
+      for (const [texture, bucket] of byTexture) {
+        const first = index;
+        for (const item of bucket) {
+          const o = index * FLOATS_PER_INSTANCE;
+          data.set(item.model, o); // 16 floats, column-major
+          const c = item.material.color;
+          data[o + 16] = c[0];
+          data[o + 17] = c[1];
+          data[o + 18] = c[2];
+          data[o + 19] = 1;
+          index++;
+        }
+        draws.push({ mesh, texture, first, count: bucket.length });
+      }
+    }
+
+    if (index > 0) {
+      device.queue.writeBuffer(this.instanceBuffer!, 0, data, 0, index * FLOATS_PER_INSTANCE);
+    }
+    return draws;
   }
+
+  private ensureInstanceCapacity(device: GPUDevice, count: number): void {
+    if (this.instanceBuffer && this.instanceCapacity >= count) return;
+    this.instanceCapacity = Math.max(count, 256);
+    this.instanceBuffer?.destroy();
+    this.instanceBuffer = device.createBuffer({
+      size: this.instanceCapacity * INSTANCE_STRIDE,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    this.instanceScratch = new Float32Array(this.instanceCapacity * FLOATS_PER_INSTANCE);
+  }
+
+  // --- Ressources. -----------------------------------------------------------
 
   private uploadMesh(device: GPUDevice, mesh: Mesh): GpuMesh {
     const cached = this.meshes.get(mesh);
@@ -287,22 +335,18 @@ export class WebGPUBackend implements RenderBackend {
     return gpu;
   }
 
-  /** Téléverse une texture (image ou pixels) et renvoie son bind group (cache). */
   private uploadTexture(device: GPUDevice, texture: Texture): GPUBindGroup {
     const cached = this.textureBindGroups.get(texture);
     if (cached) return cached;
 
     const src = texture.source;
-    const [width, height] =
-      src.kind === "pixels" ? [src.width, src.height] : imageSize(src.image);
+    const [width, height] = src.kind === "pixels" ? [src.width, src.height] : imageSize(src.image);
 
     const gpuTex = device.createTexture({
       size: [width, height],
       format: "rgba8unorm",
       usage:
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_DST |
-        GPUTextureUsage.RENDER_ATTACHMENT,
+        GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
 
     if (src.kind === "pixels") {
@@ -313,7 +357,6 @@ export class WebGPUBackend implements RenderBackend {
         [width, height],
       );
     } else {
-      // copyExternalImageToTexture gère le flipY pour les images.
       device.queue.copyExternalImageToTexture(
         { source: src.image, flipY: texture.options.flipY ?? false },
         { texture: gpuTex },
@@ -345,20 +388,6 @@ export class WebGPUBackend implements RenderBackend {
   }
 }
 
-/** Options de texture neutres -> descripteur de sampler WebGPU. */
-function samplerDescriptor(opts: TextureOptions): GPUSamplerDescriptor {
-  const filter: GPUFilterMode = opts.filter === "nearest" ? "nearest" : "linear";
-  const wrap: GPUAddressMode = opts.wrap === "clamp" ? "clamp-to-edge" : "repeat";
-  return { magFilter: filter, minFilter: filter, addressModeU: wrap, addressModeV: wrap };
-}
-
-/** Dimensions d'une source d'image (gère HTMLImageElement et les autres). */
-function imageSize(src: TexImageSource): [number, number] {
-  if (src instanceof HTMLImageElement) return [src.naturalWidth, src.naturalHeight];
-  const s = src as { width?: number; height?: number; displayWidth?: number; displayHeight?: number };
-  return [s.width ?? s.displayWidth ?? 1, s.height ?? s.displayHeight ?? 1];
-}
-
 /** Crée un GPUBuffer initialisé (taille alignée sur 4 octets, requis par WebGPU). */
 function makeBuffer(
   device: GPUDevice,
@@ -372,4 +401,18 @@ function makeBuffer(
   );
   buffer.unmap();
   return buffer;
+}
+
+/** Options de texture neutres -> descripteur de sampler WebGPU. */
+function samplerDescriptor(opts: TextureOptions): GPUSamplerDescriptor {
+  const filter: GPUFilterMode = opts.filter === "nearest" ? "nearest" : "linear";
+  const wrap: GPUAddressMode = opts.wrap === "clamp" ? "clamp-to-edge" : "repeat";
+  return { magFilter: filter, minFilter: filter, addressModeU: wrap, addressModeV: wrap };
+}
+
+/** Dimensions d'une source d'image (gère HTMLImageElement et les autres). */
+function imageSize(src: TexImageSource): [number, number] {
+  if (src instanceof HTMLImageElement) return [src.naturalWidth, src.naturalHeight];
+  const s = src as { width?: number; height?: number; displayWidth?: number; displayHeight?: number };
+  return [s.width ?? s.displayWidth ?? 1, s.height ?? s.displayHeight ?? 1];
 }

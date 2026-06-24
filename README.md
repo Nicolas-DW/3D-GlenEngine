@@ -103,11 +103,11 @@ rebrancher un sans toucher au reste.
 Faites : quaternions, glTF + textures + matériaux multiples, backend de rendu
 abstrait, migration sur WebGPU (WebGL2 retiré, conservé dans l'historique),
 caméra orbitale + pan + sensibilités, barre d'outils, réceptacle de billes
-(physique : gravité + collisions paroi/bille-bille, broad phase par grille spatiale).
+(physique : gravité + collisions paroi/bille-bille, broad phase par grille
+spatiale, rendu instancié — les objets partageant un mesh = 1 seul draw call).
 
 Restent :
 
-- Billes par milliers : rendu instancié (un seul draw pour toutes les billes) —
-  le mur des draw calls une fois la broad phase en place côté CPU.
 - Mipmaps côté WebGPU (non générés actuellement).
+- Frottement / rotation des billes (elles glissent sans rouler).
 - Migration vers un ECS si le nombre d'entités explose.
