@@ -1,0 +1,10 @@
+node_modules
+dist
+*.local
+.DS_Store
+
+# Vite transpile cache for the TS config
+vite.config.ts.timestamp-*.mjs
+
+# Local Claude Code session state
+.remember/

@@ -1,0 +1,53 @@
+import { Mesh } from "../render/Mesh";
+
+/**
+ * Crée un cube unité (centré, arêtes de longueur 1). Chaque face a ses propres
+ * sommets pour porter une normale plane correcte (d'où 24 sommets, 36 indices).
+ */
+export function createCube(gl: WebGL2RenderingContext): Mesh {
+  // 6 faces × 4 sommets. Pour chaque face : 4 positions puis sa normale.
+  const positions = new Float32Array([
+    // +X
+    0.5, -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, -0.5,
+    // -X
+    -0.5, -0.5, 0.5, -0.5, -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5,
+    // +Y
+    -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+    // -Y
+    -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, -0.5, -0.5, -0.5, -0.5, -0.5,
+    // +Z
+    -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5,
+    // -Z
+    0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5, -0.5, -0.5, -0.5,
+  ]);
+
+  const faceNormals = [
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+  ];
+  const normals = new Float32Array(72);
+  for (let f = 0; f < 6; f++) {
+    const [nx, ny, nz] = faceNormals[f];
+    for (let v = 0; v < 4; v++) {
+      const i = (f * 4 + v) * 3;
+      normals[i] = nx;
+      normals[i + 1] = ny;
+      normals[i + 2] = nz;
+    }
+  }
+
+  // 2 triangles par face, sens anti-horaire vu de l'extérieur.
+  const indices = new Uint16Array(36);
+  for (let f = 0; f < 6; f++) {
+    const o = f * 4;
+    const i = f * 6;
+    indices[i] = o; indices[i + 1] = o + 1; indices[i + 2] = o + 2;
+    indices[i + 3] = o; indices[i + 4] = o + 2; indices[i + 5] = o + 3;
+  }
+
+  return new Mesh(gl, positions, normals, indices);
+}
