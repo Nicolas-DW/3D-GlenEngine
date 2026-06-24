@@ -1,0 +1,124 @@
+import type { RigidBody } from "../components/RigidBody";
+import { Component } from "../core/Component";
+
+/** Limites internes du réceptacle (boîte ouverte : pas de plafond). */
+export interface Bounds {
+  minX: number;
+  maxX: number;
+  minY: number; // sol
+  minZ: number;
+  maxZ: number;
+}
+
+/**
+ * Monde physique (étapes 4-7 du plan). C'est un composant « manager » : comme le
+ * Renderer parcourt tous les MeshRenderer, le PhysicsWorld traite tous les
+ * RigidBody ensemble (nécessaire pour les collisions entre billes).
+ *
+ * Pas de temps FIXE (sous-pas) : la simulation reste stable et reproductible
+ * quel que soit le framerate. Collisions actuelles en O(n²) — suffisant pour
+ * quelques centaines ; au-delà il faudra une broad phase (grille spatiale).
+ */
+export class PhysicsWorld extends Component {
+  gravity = -9.81;
+  restitution = 0.35;
+  damping = 0.999; // léger amortissement (aide à se stabiliser)
+
+  private readonly bodies: RigidBody[] = [];
+  private accumulator = 0;
+  private readonly fixedStep = 1 / 120;
+
+  constructor(private readonly bounds: Bounds) {
+    super();
+  }
+
+  add(body: RigidBody): void {
+    this.bodies.push(body);
+  }
+
+  override update(dt: number): void {
+    this.accumulator += Math.min(dt, 0.05); // borne anti-spirale après un lag
+    let guard = 0;
+    while (this.accumulator >= this.fixedStep && guard++ < 8) {
+      this.step(this.fixedStep);
+      this.accumulator -= this.fixedStep;
+    }
+  }
+
+  private step(h: number): void {
+    this.integrate(h);
+    for (const body of this.bodies) this.collideBounds(body);
+    this.collidePairs();
+  }
+
+  /** Intégration semi-implicite d'Euler : v += g·h ; p += v·h. */
+  private integrate(h: number): void {
+    const dv = this.gravity * h;
+    for (const b of this.bodies) {
+      b.velocity.y += dv;
+      b.velocity.x *= this.damping;
+      b.velocity.y *= this.damping;
+      b.velocity.z *= this.damping;
+      const p = b.transform.position;
+      p.x += b.velocity.x * h;
+      p.y += b.velocity.y * h;
+      p.z += b.velocity.z * h;
+    }
+  }
+
+  /** Collision bille ↔ parois : on repousse à l'intérieur et on amortit la vitesse normale. */
+  private collideBounds(b: RigidBody): void {
+    const p = b.transform.position;
+    const v = b.velocity;
+    const r = b.radius;
+    const e = this.restitution;
+    const bd = this.bounds;
+
+    if (p.x - r < bd.minX) { p.x = bd.minX + r; if (v.x < 0) v.x = -v.x * e; }
+    else if (p.x + r > bd.maxX) { p.x = bd.maxX - r; if (v.x > 0) v.x = -v.x * e; }
+
+    if (p.y - r < bd.minY) { p.y = bd.minY + r; if (v.y < 0) v.y = -v.y * e; }
+
+    if (p.z - r < bd.minZ) { p.z = bd.minZ + r; if (v.z < 0) v.z = -v.z * e; }
+    else if (p.z + r > bd.maxZ) { p.z = bd.maxZ - r; if (v.z > 0) v.z = -v.z * e; }
+  }
+
+  /** Collisions bille ↔ bille (toutes les paires). Masses supposées égales. */
+  private collidePairs(): void {
+    const e = this.restitution;
+    const list = this.bodies;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      const pa = a.transform.position;
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+        const pb = b.transform.position;
+        const dx = pb.x - pa.x;
+        const dy = pb.y - pa.y;
+        const dz = pb.z - pa.z;
+        const minDist = a.radius + b.radius;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= minDist * minDist || d2 < 1e-12) continue;
+
+        const dist = Math.sqrt(d2);
+        const nx = dx / dist;
+        const ny = dy / dist;
+        const nz = dz / dist;
+
+        // Séparer (chacune de la moitié du chevauchement).
+        const overlap = (minDist - dist) * 0.5;
+        pa.x -= nx * overlap; pa.y -= ny * overlap; pa.z -= nz * overlap;
+        pb.x += nx * overlap; pb.y += ny * overlap; pb.z += nz * overlap;
+
+        // Impulsion le long de la normale (masses égales).
+        const va = a.velocity;
+        const vb = b.velocity;
+        const vn = (vb.x - va.x) * nx + (vb.y - va.y) * ny + (vb.z - va.z) * nz;
+        if (vn > 0) continue; // déjà en train de se séparer
+        const imp = (-(1 + e) * vn) / 2;
+        va.x -= imp * nx; va.y -= imp * ny; va.z -= imp * nz;
+        vb.x += imp * nx; vb.y += imp * ny; vb.z += imp * nz;
+      }
+    }
+  }
+}

@@ -57,16 +57,20 @@ src/
 │   ├── Camera.ts           # caméra perspective (projection + vue)
 │   ├── OrbitController.ts  # caméra orbitale souris / trackpad
 │   ├── MeshRenderer.ts     # rend un objet dessinable (mesh + material)
+│   ├── RigidBody.ts        # corps physique d'une bille (vitesse + rayon)
 │   └── Rotator.ts          # démo : fait tourner l'objet
+├── physics/
+│   └── PhysicsWorld.ts     # pas global : gravité + collisions (paroi, bille-bille)
 ├── loaders/
 │   └── GltfLoader.ts       # importe des modèles glTF 2.0 (.gltf / .glb)
 ├── experiences/
 │   ├── Experience.ts       # interface : start() / stop() une scène jouable
-│   └── MarblesExperience.ts# réceptacle de billes (en construction)
+│   └── MarblesExperience.ts# réceptacle + ~120 billes physiques
 ├── ui/
 │   └── Sidebar.ts          # barre d'outils : expériences + réglages
 └── geometry/
-    └── cube.ts             # génère un cube unité
+    ├── cube.ts             # génère un cube unité
+    └── sphere.ts           # génère une sphère UV (les billes)
 ```
 
 ### Boucle de jeu (Engine)
@@ -98,10 +102,12 @@ rebrancher un sans toucher au reste.
 
 Faites : quaternions, glTF + textures + matériaux multiples, backend de rendu
 abstrait, migration sur WebGPU (WebGL2 retiré, conservé dans l'historique),
-caméra orbitale souris / trackpad.
+caméra orbitale + pan + sensibilités, barre d'outils, réceptacle de billes
+(physique : gravité + collisions paroi et bille-bille).
 
 Restent :
 
-- Pan de la caméra (translation latérale de la cible).
+- Billes par milliers : broad phase (grille spatiale, O(n²) → ~O(n)) et rendu
+  instancié (un seul draw pour toutes les billes).
 - Mipmaps côté WebGPU (non générés actuellement).
 - Migration vers un ECS si le nombre d'entités explose.
