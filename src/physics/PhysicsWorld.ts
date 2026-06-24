@@ -22,12 +22,15 @@ export interface Bounds {
  * (broad phase) : on ne teste que les billes des cellules voisines → ~O(n) au
  * lieu de O(n²), ce qui débloque la montée en nombre.
  */
+const SLOP = 0.01; // chevauchement toléré au repos (limite le jitter)
+const ROLL_GAIN = 0.6; // couplage glissement -> rotation
+
 export class PhysicsWorld extends Component {
   gravity = -9.81;
-  restitution = 0.35;
-  damping = 0.999; // léger amortissement linéaire
-  friction = 0.15; // frottement tangentiel aux contacts (les billes ne glissent plus à l'infini)
-  angularDamping = 0.985; // amortissement de la rotation
+  restitution = 0.2; // moins de rebond -> se stabilise plus vite
+  damping = 0.995; // amortissement linéaire
+  friction = 0.35; // frottement tangentiel aux contacts
+  angularDamping = 0.96; // amortissement de la rotation
 
   private readonly bodies: RigidBody[] = [];
   private maxRadius = 0;
@@ -68,14 +71,21 @@ export class PhysicsWorld extends Component {
   private integrate(h: number): void {
     const dv = this.gravity * h;
     for (const b of this.bodies) {
-      b.velocity.y += dv;
-      b.velocity.x *= this.damping;
-      b.velocity.y *= this.damping;
-      b.velocity.z *= this.damping;
+      const v = b.velocity;
+      v.y += dv;
+      v.x *= this.damping;
+      v.y *= this.damping;
+      v.z *= this.damping;
+      // Amortissement renforcé à très basse vitesse : aide à s'immobiliser.
+      if (v.x * v.x + v.y * v.y + v.z * v.z < 0.04) {
+        v.x *= 0.85;
+        v.y *= 0.85;
+        v.z *= 0.85;
+      }
       const p = b.transform.position;
-      p.x += b.velocity.x * h;
-      p.y += b.velocity.y * h;
-      p.z += b.velocity.z * h;
+      p.x += v.x * h;
+      p.y += v.y * h;
+      p.z += v.z * h;
     }
   }
 
@@ -181,19 +191,46 @@ export class PhysicsWorld extends Component {
     const ny = dy / dist;
     const nz = dz / dist;
 
-    // Séparer (chacune de la moitié du chevauchement).
-    const overlap = (minDist - dist) * 0.5;
-    pa.x -= nx * overlap; pa.y -= ny * overlap; pa.z -= nz * overlap;
-    pb.x += nx * overlap; pb.y += ny * overlap; pb.z += nz * overlap;
+    // Séparer (moitié chacune), en tolérant un petit chevauchement (slop).
+    const corr = Math.max(0, minDist - dist - SLOP) * 0.5;
+    pa.x -= nx * corr; pa.y -= ny * corr; pa.z -= nz * corr;
+    pb.x += nx * corr; pb.y += ny * corr; pb.z += nz * corr;
 
-    // Impulsion le long de la normale.
     const va = a.velocity;
     const vb = b.velocity;
+
+    // 1) Impulsion NORMALE (restitution).
     const vn = (vb.x - va.x) * nx + (vb.y - va.y) * ny + (vb.z - va.z) * nz;
-    if (vn > 0) return; // déjà en train de se séparer
-    const imp = (-(1 + this.restitution) * vn) / 2;
-    va.x -= imp * nx; va.y -= imp * ny; va.z -= imp * nz;
-    vb.x += imp * nx; vb.y += imp * ny; vb.z += imp * nz;
+    if (vn < 0) {
+      const jn = (-(1 + this.restitution) * vn) / 2;
+      va.x -= jn * nx; va.y -= jn * ny; va.z -= jn * nz;
+      vb.x += jn * nx; vb.y += jn * ny; vb.z += jn * nz;
+    }
+
+    // 2) Frottement TANGENTIEL + roulement (recalcule la vitesse relative).
+    const rvx = vb.x - va.x;
+    const rvy = vb.y - va.y;
+    const rvz = vb.z - va.z;
+    const rvn = rvx * nx + rvy * ny + rvz * nz;
+    let tx = rvx - rvn * nx;
+    let ty = rvy - rvn * ny;
+    let tz = rvz - rvn * nz;
+    const tl = Math.hypot(tx, ty, tz);
+    if (tl < 1e-5) return;
+    tx /= tl; ty /= tl; tz /= tl;
+
+    // Amortit le glissement tangentiel (ne peut qu'enlever de l'énergie).
+    const jt = this.friction * tl * 0.5;
+    va.x += tx * jt; va.y += ty * jt; va.z += tz * jt;
+    vb.x -= tx * jt; vb.y -= ty * jt; vb.z -= tz * jt;
+
+    // Induit la rotation : ω ∝ (n × t) * vitesse de glissement / rayon.
+    const cx = ny * tz - nz * ty;
+    const cy = nz * tx - nx * tz;
+    const cz = nx * ty - ny * tx;
+    const g = (tl * ROLL_GAIN) / a.radius;
+    a.angularVelocity.x += cx * g; a.angularVelocity.y += cy * g; a.angularVelocity.z += cz * g;
+    b.angularVelocity.x += cx * g; b.angularVelocity.y += cy * g; b.angularVelocity.z += cz * g;
   }
 }
 
