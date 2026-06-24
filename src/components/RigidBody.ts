@@ -20,6 +20,13 @@ export class RigidBody {
   /** Transitoire : le PhysicsSystem le met à true quand le corps a un contact ce
    *  sous-pas (sert à n'amortir au repos QUE les corps posés, pas ceux en vol). */
   contacted = false;
+  /** Mise en sommeil : un corps lent et posé depuis assez longtemps est gelé
+   *  (gravité + intégration ignorées) jusqu'à ce qu'un choc le réveille. */
+  sleeping = false;
+  stillTime = 0; // durée écoulée au calme (s), pour décider du sommeil
+  /** Transitoire : a un appui par en dessous ce sous-pas (garde-fou anti-flottaison
+   *  — on n'endort que les corps réellement soutenus). */
+  supported = false;
 
   constructor(radius = 0.3, mass = 1) {
     this.radius = radius;
