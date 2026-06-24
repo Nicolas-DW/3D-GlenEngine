@@ -14,12 +14,68 @@ export interface System {
   update(world: World, dt: number): void;
 }
 
-const EMPTY = new Map<Entity, never>();
+/**
+ * Store packé d'un type de composant (« sparse-set »).
+ *
+ * - `dense` / `entities` : tableaux PARALLÈLES et compactés (aucun trou) — l'un
+ *   les composants, l'autre l'ID de l'entité en regard. L'itération est donc un
+ *   simple `for` contigu.
+ * - `index` : entité -> position dans `dense` (la partie « sparse »).
+ *
+ * Retrait en O(1) par **swap-remove** : on bouche le trou avec le dernier
+ * élément puis on `pop()` (l'ordre n'est pas préservé, mais nos systèmes n'en
+ * dépendent pas).
+ */
+class ComponentStore<T extends object> {
+  readonly dense: T[] = [];
+  readonly entities: Entity[] = [];
+  private readonly index = new Map<Entity, number>();
+
+  set(entity: Entity, component: T): T {
+    const i = this.index.get(entity);
+    if (i !== undefined) {
+      this.dense[i] = component; // remplacement en place
+      return component;
+    }
+    this.index.set(entity, this.dense.length);
+    this.dense.push(component);
+    this.entities.push(entity);
+    return component;
+  }
+
+  get(entity: Entity): T | undefined {
+    const i = this.index.get(entity);
+    return i === undefined ? undefined : this.dense[i];
+  }
+
+  has(entity: Entity): boolean {
+    return this.index.has(entity);
+  }
+
+  delete(entity: Entity): void {
+    const i = this.index.get(entity);
+    if (i === undefined) return;
+    const last = this.dense.length - 1;
+    if (i !== last) {
+      const moved = this.entities[last];
+      this.dense[i] = this.dense[last];
+      this.entities[i] = moved;
+      this.index.set(moved, i); // l'élément déplacé pointe vers le trou comblé
+    }
+    this.dense.pop();
+    this.entities.pop();
+    this.index.delete(entity);
+  }
+
+  get size(): number {
+    return this.dense.length;
+  }
+}
 
 export class World {
   private nextId = 1;
-  // type de composant -> (entité -> instance du composant)
-  private readonly stores = new Map<Function, Map<Entity, object>>();
+  // type de composant -> store packé
+  private readonly stores = new Map<Function, ComponentStore<object>>();
 
   /** Crée une nouvelle entité (juste un ID). */
   create(): Entity {
@@ -28,14 +84,7 @@ export class World {
 
   /** Attache (ou remplace) un composant sur une entité. */
   add<T extends object>(entity: Entity, component: T): T {
-    const key = component.constructor;
-    let store = this.stores.get(key);
-    if (!store) {
-      store = new Map();
-      this.stores.set(key, store);
-    }
-    store.set(entity, component);
-    return component;
+    return this.store(component.constructor).set(entity, component) as T;
   }
 
   /** Retire un composant d'une entité. */
@@ -56,17 +105,30 @@ export class World {
     for (const store of this.stores.values()) store.delete(entity);
   }
 
-  /** Itère sur (entité, composant) pour un type donné. */
-  view<T>(type: ComponentClass<T>): IterableIterator<[Entity, T]> {
-    const store = (this.stores.get(type) ?? EMPTY) as Map<Entity, T>;
-    return store.entries();
+  /**
+   * Itère sur (entité, composant) pour un type donné, en parcourant les tableaux
+   * packés. Ne pas ajouter/retirer ce MÊME composant pendant l'itération.
+   */
+  *view<T>(type: ComponentClass<T>): IterableIterator<[Entity, T]> {
+    const store = this.stores.get(type);
+    if (!store) return;
+    const { dense, entities } = store;
+    for (let i = 0; i < dense.length; i++) yield [entities[i], dense[i] as T];
   }
 
   /** Première entité possédant ce composant (ex. la caméra). */
   first<T>(type: ComponentClass<T>): [Entity, T] | undefined {
-    const store = this.stores.get(type) as Map<Entity, T> | undefined;
-    if (!store) return undefined;
-    const next = store.entries().next();
-    return next.done ? undefined : next.value;
+    const store = this.stores.get(type);
+    if (!store || store.size === 0) return undefined;
+    return [store.entities[0], store.dense[0] as T];
+  }
+
+  private store(key: Function): ComponentStore<object> {
+    let store = this.stores.get(key);
+    if (!store) {
+      store = new ComponentStore();
+      this.stores.set(key, store);
+    }
+    return store;
   }
 }

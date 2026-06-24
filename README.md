@@ -44,7 +44,7 @@ src/
 │   ├── Quaternion.ts       # rotations (sans gimbal lock)
 │   └── Mat4.ts             # matrices 4x4 (column-major, prêtes pour le GPU)
 ├── core/
-│   ├── World.ts            # ECS : entités + stores de composants
+│   ├── World.ts            # ECS : entités + stores packés (sparse-set)
 │   ├── Engine.ts           # game loop : update() des systèmes puis rendu
 │   └── Transform.ts        # composant position / rotation / échelle (+ hiérarchie)
 ├── components/             # COMPOSANTS = données pures
@@ -54,7 +54,7 @@ src/
 │   └── Rotator.ts          # vitesse de rotation (démo)
 ├── systems/                # SYSTÈMES = logique
 │   ├── RenderSystem.ts     # assemble la frame depuis le World, délègue au backend
-│   ├── PhysicsSystem.ts    # gravité, collisions, frottement, roulement, broad phase
+│   ├── PhysicsSystem.ts    # gravité, collisions, frottement par impulsions (inertie), broad phase
 │   ├── OrbitSystem.ts      # caméra orbitale souris / trackpad
 │   └── RotatorSystem.ts    # fait tourner les entités avec un Rotator
 ├── render/
@@ -104,11 +104,16 @@ mesh (1 draw call). Backend actuel : **WebGPU** ; WebGL2 retiré (historique git
 Faites : quaternions, glTF + textures + matériaux multiples, backend de rendu
 abstrait, migration sur WebGPU (WebGL2 retiré, conservé dans l'historique),
 caméra orbitale + pan + sensibilités, barre d'outils, réceptacle de billes
-(physique : gravité, collisions paroi/bille-bille, frottement + roulement,
-broad phase par grille spatiale, rendu instancié), mipmaps WebGPU, **migration
-ECS complète**.
+(physique : gravité, collisions paroi/bille-bille, **frottement par impulsions au
+point de contact avec inertie** — glissement → roulement et dissipation de la
+rotation —, broad phase par grille spatiale, rendu instancié), mipmaps WebGPU,
+**migration ECS complète**, **stores packés (sparse-set, retrait O(1), itération
+dense)**.
 
 Restent :
 
-- Stores ECS contigus (typed arrays) pour pousser le data-oriented plus loin.
-- Frottement plus physique (vrai modèle d'impulsion avec inertie).
+- Stockage SoA en *typed arrays* bruts (données contiguës en mémoire, pas
+  seulement les références) — un cran plus loin que le sparse-set, au prix de
+  composants réduits à des champs primitifs (plus de composants-classes).
+- Friction de Coulomb bornée (impulsion tangentielle plafonnée par `µ·jₙ`) plutôt
+  que la fraction de vitesse de surface dissipée actuelle.
