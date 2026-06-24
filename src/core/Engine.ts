@@ -1,24 +1,35 @@
-import { Renderer } from "../render/Renderer";
-import { Scene } from "./Scene";
+import { RenderSystem } from "../systems/RenderSystem";
+import type { System } from "./World";
+import { World } from "./World";
 
 /**
- * Orchestrateur : possède le canvas, le renderer et la scène, et fait tourner
- * la game loop via requestAnimationFrame.
+ * Orchestrateur ECS : possède le World, la liste des systèmes et le système de
+ * rendu, et fait tourner la game loop.
  *
- * Chaque frame : 1) start() sur les nouveaux composants, 2) update(dt) sur
- * tous, 3) rendu.
+ * Chaque frame : update(dt) sur tous les systèmes, puis le rendu en dernier.
  */
 export class Engine {
-  readonly renderer: Renderer;
-  readonly scene = new Scene();
+  readonly world = new World();
+  readonly render: RenderSystem;
 
-  private readonly started = new WeakSet<object>();
+  private readonly systems: System[] = [];
   private lastTime = 0;
   private running = false;
 
   constructor(readonly canvas: HTMLCanvasElement) {
-    this.renderer = new Renderer(canvas);
-    window.addEventListener("resize", () => this.renderer.resize());
+    this.render = new RenderSystem(canvas);
+    window.addEventListener("resize", () => this.render.resize());
+  }
+
+  /** Enregistre un système (exécuté chaque frame, avant le rendu). */
+  add(system: System): System {
+    this.systems.push(system);
+    return system;
+  }
+
+  remove(system: System): void {
+    const i = this.systems.indexOf(system);
+    if (i >= 0) this.systems.splice(i, 1);
   }
 
   start(): void {
@@ -37,17 +48,9 @@ export class Engine {
     const dt = Math.min((now - this.lastTime) / 1000, 0.1); // clamp anti-saut
     this.lastTime = now;
 
-    for (const go of this.scene.traverse()) {
-      for (const c of go.components) {
-        if (!this.started.has(c)) {
-          this.started.add(c);
-          c.start();
-        }
-        c.update(dt);
-      }
-    }
+    for (const system of this.systems) system.update(this.world, dt);
+    this.render.update(this.world, dt); // rendu en dernier
 
-    this.renderer.render(this.scene);
     requestAnimationFrame(this.frame);
   };
 }
