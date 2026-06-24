@@ -17,6 +17,10 @@ export class RigidBody {
   readonly invMass: number;
   readonly invInertia: number; // 1 / I, avec I = ⅖·m·r²
 
+  /** Transitoire : le PhysicsSystem le met à true quand le corps a un contact ce
+   *  sous-pas (sert à n'amortir au repos QUE les corps posés, pas ceux en vol). */
+  contacted = false;
+
   constructor(radius = 0.3, mass = 1) {
     this.radius = radius;
     this.mass = mass;

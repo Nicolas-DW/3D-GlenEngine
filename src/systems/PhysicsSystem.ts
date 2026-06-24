@@ -20,8 +20,13 @@ interface Particle {
 }
 
 const SLOP = 0.01; // chevauchement toléré au repos (limite le jitter)
-const SLEEP_LINEAR = 0.04; // vitesse² sous laquelle on amortit fort le linéaire
-const SLEEP_ANGULAR = 0.06; // ω sous laquelle on annule la rotation résiduelle
+// Seuils de mise au repos (n'agissent que sur les corps EN CONTACT, jamais en vol).
+const STOP_LINEAR_SQ = 0.0009; // |v| < 0.03 m/s   -> arrêt net
+const DAMP_LINEAR_SQ = 0.04; //   |v| < 0.2 m/s    -> fort amortissement
+const DAMP_ANGULAR_SQ = 0.25; //  |ω| < 0.5 rad/s  -> fort amortissement
+const STOP_ANGULAR = 0.08; //     |ω| < 0.08 rad/s -> rotation annulée (tous corps)
+const RESTITUTION_SLOP = 0.4; // pas de rebond sous cette vitesse d'approche (m/s)
+const TWIST = 0.5; // force du frottement de pivotement vs glissement
 
 /**
  * Paramètres physiques RÉGLABLES, regroupés dans un objet partagé : le système
@@ -87,13 +92,15 @@ export class PhysicsSystem implements System {
 
   private step(h: number): void {
     this.integrate(h);
+    for (const p of this.particles) p.body.contacted = false; // réinitialise avant collisions
     for (const p of this.particles) this.collideBounds(p);
     this.collidePairs();
+    this.settleContacted(); // amortit/arrête les corps posés (jamais ceux en vol)
     this.integrateOrientation(h);
   }
 
   private integrate(h: number): void {
-    const damping = this.params.damping;
+    const damping = this.params.damping; // amortissement de l'air (s'applique à tous)
     const dv = this.params.gravity * h;
     for (const { body, transform } of this.particles) {
       const v = body.velocity;
@@ -101,15 +108,28 @@ export class PhysicsSystem implements System {
       v.x *= damping;
       v.y *= damping;
       v.z *= damping;
-      if (v.x * v.x + v.y * v.y + v.z * v.z < SLEEP_LINEAR) {
-        v.x *= 0.85;
-        v.y *= 0.85;
-        v.z *= 0.85;
-      }
       const p = transform.position;
       p.x += v.x * h;
       p.y += v.y * h;
       p.z += v.z * h;
+    }
+  }
+
+  /**
+   * Mise au repos : amortit fortement (voire annule) les corps lents QUI ONT UN
+   * CONTACT ce sous-pas. Réservé aux corps posés/coincés -> une bille en chute
+   * libre n'est jamais freinée, et tombe donc même sous une gravité minuscule.
+   */
+  private settleContacted(): void {
+    for (const { body } of this.particles) {
+      if (!body.contacted) continue;
+      const v = body.velocity;
+      const v2 = v.x * v.x + v.y * v.y + v.z * v.z;
+      if (v2 < STOP_LINEAR_SQ) { v.x = 0; v.y = 0; v.z = 0; }
+      else if (v2 < DAMP_LINEAR_SQ) { v.x *= 0.6; v.y *= 0.6; v.z *= 0.6; }
+
+      const w = body.angularVelocity;
+      if (w.x * w.x + w.y * w.y + w.z * w.z < DAMP_ANGULAR_SQ) { w.x *= 0.6; w.y *= 0.6; w.z *= 0.6; }
     }
   }
 
@@ -121,13 +141,16 @@ export class PhysicsSystem implements System {
     const bd = this.bounds;
 
     // Normale dirigée de la bille VERS la paroi (convention du solveur).
-    if (p.x - r < bd.minX) { p.x = bd.minX + r; this.resolveContact(body, null, -1, 0, 0); }
-    else if (p.x + r > bd.maxX) { p.x = bd.maxX - r; this.resolveContact(body, null, 1, 0, 0); }
+    let hit = false;
+    if (p.x - r < bd.minX) { p.x = bd.minX + r; this.resolveContact(body, null, -1, 0, 0); hit = true; }
+    else if (p.x + r > bd.maxX) { p.x = bd.maxX - r; this.resolveContact(body, null, 1, 0, 0); hit = true; }
 
-    if (p.z - r < bd.minZ) { p.z = bd.minZ + r; this.resolveContact(body, null, 0, 0, -1); }
-    else if (p.z + r > bd.maxZ) { p.z = bd.maxZ - r; this.resolveContact(body, null, 0, 0, 1); }
+    if (p.z - r < bd.minZ) { p.z = bd.minZ + r; this.resolveContact(body, null, 0, 0, -1); hit = true; }
+    else if (p.z + r > bd.maxZ) { p.z = bd.maxZ - r; this.resolveContact(body, null, 0, 0, 1); hit = true; }
 
-    if (p.y - r < bd.minY) { p.y = bd.minY + r; this.resolveContact(body, null, 0, -1, 0); }
+    if (p.y - r < bd.minY) { p.y = bd.minY + r; this.resolveContact(body, null, 0, -1, 0); hit = true; }
+
+    if (hit) body.contacted = true;
   }
 
   private integrateOrientation(h: number): void {
@@ -136,7 +159,7 @@ export class PhysicsSystem implements System {
       const w = body.angularVelocity;
       w.x *= d; w.y *= d; w.z *= d;
       const speed = Math.hypot(w.x, w.y, w.z);
-      if (speed < SLEEP_ANGULAR) { w.x = 0; w.y = 0; w.z = 0; continue; } // tue le spin résiduel
+      if (speed < STOP_ANGULAR) { w.x = 0; w.y = 0; w.z = 0; continue; } // tue le spin résiduel
       this.spinAxis.set(w.x / speed, w.y / speed, w.z / speed);
       this.spinDelta.setFromAxisAngle(this.spinAxis, speed * h);
       this.spinDelta.multiply(transform.rotation);
@@ -202,6 +225,8 @@ export class PhysicsSystem implements System {
     pa.x -= nx * corr * imA; pa.y -= ny * corr * imA; pa.z -= nz * corr * imA;
     pb.x += nx * corr * imB; pb.y += ny * corr * imB; pb.z += nz * corr * imB;
 
+    a.body.contacted = true;
+    b.body.contacted = true;
     this.resolveContact(a.body, b.body, nx, ny, nz);
   }
 
@@ -212,9 +237,13 @@ export class PhysicsSystem implements System {
    * 1. Impulsion normale (restitution). Pour des sphères, le point de contact est
    *    sur la ligne des centres : `r × n = 0`, donc l'angulaire n'intervient pas
    *    dans le normal.
-   * 2. Impulsion tangentielle (frottement) : on vise la vitesse de surface au
+   * 2. Frottement de GLISSEMENT (tangentiel) : on vise la vitesse de surface au
    *    contact `v + ω × r`. On en retire une fraction `friction`, répartie entre
    *    linéaire et angulaire via la masse effective tangentielle `1/m + r²/I`.
+   * 3. Frottement de PIVOTEMENT (twist/drilling) : amortit la rotation relative
+   *    autour de la normale — le glissement ne peut pas la voir (point de contact
+   *    sur l'axe = vitesse de surface nulle), sans quoi une bille tournerait
+   *    indéfiniment comme une toupie.
    */
   private resolveContact(a: RigidBody, b: RigidBody | null, nx: number, ny: number, nz: number): void {
     const ra = a.radius;
@@ -247,39 +276,54 @@ export class PhysicsSystem implements System {
     const iiA = a.invInertia, iiB = b ? b.invInertia : 0;
 
     // --- 1. Impulsion normale (rebond). ---
+    // Restitution annulée sous une vitesse d'approche faible : stoppe le
+    // micro-rebond qui entretient le jitter d'un tas au repos.
     if (vn < 0) {
-      const jn = (-(1 + this.params.restitution) * vn) / (imA + imB);
+      const e = -vn > RESTITUTION_SLOP ? this.params.restitution : 0;
+      const jn = (-(1 + e) * vn) / (imA + imB);
       av.x -= jn * imA * nx; av.y -= jn * imA * ny; av.z -= jn * imA * nz;
       if (bv) { bv.x += jn * imB * nx; bv.y += jn * imB * ny; bv.z += jn * imB * nz; }
     }
 
-    // --- 2. Impulsion tangentielle (frottement). ---
+    // --- 2. Frottement de glissement (tangentiel). ---
     // Composante tangentielle de la vitesse de surface relative.
     let tx = rvx - vn * nx;
     let ty = rvy - vn * ny;
     let tz = rvz - vn * nz;
     const tl = Math.hypot(tx, ty, tz);
-    if (tl < 1e-6) return;
-    tx /= tl; ty /= tl; tz /= tl;
+    if (tl > 1e-6) {
+      tx /= tl; ty /= tl; tz /= tl;
 
-    // Masse effective tangentielle : 1/m + r²/I de chaque corps (|r × t| = r).
-    const kt = imA + imB + iiA * ra * ra + iiB * rb * rb;
-    const jt = (tl / kt) * this.params.friction; // on dissipe une fraction de la vitesse de surface
+      // Masse effective tangentielle : 1/m + r²/I de chaque corps (|r × t| = r).
+      const kt = imA + imB + iiA * ra * ra + iiB * rb * rb;
+      const jt = (tl / kt) * this.params.friction; // on dissipe une fraction de la vitesse de surface
 
-    // Impulsion P sur B (et −P sur A), dirigée pour réduire la vitesse tangentielle.
-    const px = -jt * tx, py = -jt * ty, pz = -jt * tz;
+      // Impulsion P sur B (et −P sur A), dirigée pour réduire la vitesse tangentielle.
+      const px = -jt * tx, py = -jt * ty, pz = -jt * tz;
 
-    // A reçoit −P (linéaire + couple ω -= 1/I · (r × P)).
-    av.x -= imA * px; av.y -= imA * py; av.z -= imA * pz;
-    aw.x -= iiA * (ray * pz - raz * py);
-    aw.y -= iiA * (raz * px - rax * pz);
-    aw.z -= iiA * (rax * py - ray * px);
+      // A reçoit −P (linéaire + couple ω -= 1/I · (r × P)).
+      av.x -= imA * px; av.y -= imA * py; av.z -= imA * pz;
+      aw.x -= iiA * (ray * pz - raz * py);
+      aw.y -= iiA * (raz * px - rax * pz);
+      aw.z -= iiA * (rax * py - ray * px);
 
-    if (bv && bw) {
-      bv.x += imB * px; bv.y += imB * py; bv.z += imB * pz;
-      bw.x += iiB * (rby * pz - rbz * py);
-      bw.y += iiB * (rbz * px - rbx * pz);
-      bw.z += iiB * (rbx * py - rby * px);
+      if (bv && bw) {
+        bv.x += imB * px; bv.y += imB * py; bv.z += imB * pz;
+        bw.x += iiB * (rby * pz - rbz * py);
+        bw.y += iiB * (rbz * px - rbx * pz);
+        bw.z += iiB * (rbx * py - rby * px);
+      }
+    }
+
+    // --- 3. Frottement de pivotement (twist) : amortit la rotation relative
+    //        autour de la normale, invisible au glissement. ---
+    const iiSum = iiA + iiB;
+    if (iiSum > 1e-9) {
+      const wan = aw.x * nx + aw.y * ny + aw.z * nz;
+      const wbn = bw ? bw.x * nx + bw.y * ny + bw.z * nz : 0;
+      const jw = ((wbn - wan) / iiSum) * this.params.friction * TWIST;
+      aw.x += iiA * jw * nx; aw.y += iiA * jw * ny; aw.z += iiA * jw * nz;
+      if (bw) { bw.x -= iiB * jw * nx; bw.y -= iiB * jw * ny; bw.z -= iiB * jw * nz; }
     }
   }
 }
