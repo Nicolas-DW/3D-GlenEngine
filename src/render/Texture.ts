@@ -16,7 +16,7 @@ export interface TextureOptions {
 
 export type TextureSource =
   | { kind: "image"; image: TexImageSource }
-  | { kind: "pixels"; width: number; height: number; data: Uint8Array };
+  | { kind: "pixels"; width: number; height: number; data: Uint8Array<ArrayBuffer> };
 
 export class Texture {
   constructor(
@@ -31,7 +31,7 @@ export class Texture {
   static fromPixels(
     width: number,
     height: number,
-    data: Uint8Array,
+    data: Uint8Array<ArrayBuffer>,
     options: TextureOptions = {},
   ): Texture {
     return new Texture({ kind: "pixels", width, height, data }, options);

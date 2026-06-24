@@ -48,7 +48,7 @@ engine.start();
 // --- Helpers de démo. --------------------------------------------------------
 
 /** Génère une texture damier RGBA (8×8 cellules) sous forme d'octets bruts. */
-function makeCheckerboard(size: number): Uint8Array {
+function makeCheckerboard(size: number): Uint8Array<ArrayBuffer> {
   const cell = size / 8;
   const pixels = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++) {

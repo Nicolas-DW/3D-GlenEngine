@@ -1,7 +1,8 @@
 import type { FrameData, RenderBackend } from "./RenderBackend";
-import { Mesh } from "./Mesh";
+import type { Mesh } from "./Mesh";
+import type { Texture, TextureOptions } from "./Texture";
 
-/** Source WGSL : MVP + éclairage directionnel (équivalent du shader WebGL). */
+/** Source WGSL : MVP + éclairage directionnel + texture (équivalent du shader WebGL). */
 const WGSL = `
 struct Uniforms {
   projection : mat4x4<f32>,
@@ -10,10 +11,13 @@ struct Uniforms {
   color : vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u : Uniforms;
+@group(1) @binding(0) var albedo : texture_2d<f32>;
+@group(1) @binding(1) var albedoSampler : sampler;
 
 struct VsOut {
   @builtin(position) clip : vec4<f32>,
   @location(0) normal : vec3<f32>,
+  @location(1) uv : vec2<f32>,
 };
 
 @vertex
@@ -29,6 +33,7 @@ fn vs(
   // WebGPU attend [0, 1] : on remappe z, sinon la moitié proche serait clippée.
   out.clip.z = (out.clip.z + out.clip.w) * 0.5;
   out.normal = (u.model * vec4<f32>(normal, 0.0)).xyz;
+  out.uv = uv;
   return out;
 }
 
@@ -37,8 +42,11 @@ fn fs(in : VsOut) -> @location(0) vec4<f32> {
   let n = normalize(in.normal);
   let lightDir = normalize(vec3<f32>(0.5, 0.8, 0.6));
   let diff = max(dot(n, lightDir), 0.0);
-  let color = u.color.rgb * (0.25 + 0.75 * diff);
-  return vec4<f32>(color, 1.0);
+  // Texture par défaut = blanc 1×1, donc blanc × couleur = couleur : pas besoin
+  // de brancher, on échantillonne toujours (flux uniforme requis par WGSL).
+  let albedoColor = textureSample(albedo, albedoSampler, in.uv).rgb;
+  let base = u.color.rgb * albedoColor;
+  return vec4<f32>(base * (0.25 + 0.75 * diff), 1.0);
 }
 `;
 
@@ -62,8 +70,9 @@ const UNIFORM_STRIDE = 256; // une tranche par objet (aligné GPU)
  * est un no-op tant que `ready` est faux (les toutes premières frames sont
  * simplement noires).
  *
- * Périmètre actuel : géométrie + couleur + éclairage. Le texturing reste sur le
- * chemin WebGL2 (le plus complet) ; l'ajouter ici = un bind group texture+sampler.
+ * Périmètre actuel : géométrie + couleur + éclairage + texturing (bind group
+ * texture+sampler, texture blanche par défaut quand le matériau n'en a pas).
+ * Limite connue : pas de génération de mipmaps (WebGL2 les génère, pas ici).
  *
  * NOTE : non validé au runtime dans cet environnement (sans GPU/navigateur) ;
  * vérifié au typecheck. À exécuter dans un navigateur compatible WebGPU.
@@ -75,6 +84,8 @@ export class WebGPUBackend implements RenderBackend {
   private context: GPUCanvasContext | null = null;
   private pipeline: GPURenderPipeline | null = null;
   private layout: GPUBindGroupLayout | null = null;
+  private texLayout: GPUBindGroupLayout | null = null;
+  private whiteBindGroup: GPUBindGroup | null = null;
   private depthView: GPUTextureView | null = null;
   private depthTexture: GPUTexture | null = null;
 
@@ -83,6 +94,7 @@ export class WebGPUBackend implements RenderBackend {
   private uniformCapacity = 0;
 
   private readonly meshes = new WeakMap<Mesh, GpuMesh>();
+  private readonly textureBindGroups = new WeakMap<Texture, GPUBindGroup>();
   private readonly scratch = new Float32Array(UNIFORM_STRIDE / 4);
   private ready = false;
 
@@ -113,9 +125,16 @@ export class WebGPUBackend implements RenderBackend {
         },
       ],
     });
+    // Groupe 1 : la texture du matériau + son sampler.
+    this.texLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+      ],
+    });
 
     this.pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [this.layout] }),
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.layout, this.texLayout] }),
       vertex: {
         module,
         entryPoint: "vs",
@@ -129,6 +148,24 @@ export class WebGPUBackend implements RenderBackend {
       primitive: { topology: "triangle-list", cullMode: "back", frontFace: "ccw" },
       depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
     });
+
+    // Texture blanche 1×1 : utilisée par les matériaux SANS texture (blanc = neutre).
+    const white = device.createTexture({
+      size: [1, 1],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: white },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 4 },
+      [1, 1],
+    );
+    this.whiteBindGroup = this.makeTextureBindGroup(
+      device,
+      white.createView(),
+      device.createSampler({ magFilter: "linear", minFilter: "linear" }),
+    );
 
     this.resize();
     this.ready = true;
@@ -197,8 +234,13 @@ export class WebGPUBackend implements RenderBackend {
 
     pass.setPipeline(pipeline);
     for (let i = 0; i < frame.items.length; i++) {
-      const gpu = this.uploadMesh(device, frame.items[i].mesh);
+      const item = frame.items[i];
+      const gpu = this.uploadMesh(device, item.mesh);
+      const texBind = item.material.texture
+        ? this.uploadTexture(device, item.material.texture)
+        : this.whiteBindGroup!;
       pass.setBindGroup(0, bindGroup, [i * UNIFORM_STRIDE]);
+      pass.setBindGroup(1, texBind);
       pass.setVertexBuffer(0, gpu.positions);
       pass.setVertexBuffer(1, gpu.normals);
       pass.setVertexBuffer(2, gpu.uvs);
@@ -244,6 +286,77 @@ export class WebGPUBackend implements RenderBackend {
     this.meshes.set(mesh, gpu);
     return gpu;
   }
+
+  /** Téléverse une texture (image ou pixels) et renvoie son bind group (cache). */
+  private uploadTexture(device: GPUDevice, texture: Texture): GPUBindGroup {
+    const cached = this.textureBindGroups.get(texture);
+    if (cached) return cached;
+
+    const src = texture.source;
+    const [width, height] =
+      src.kind === "pixels" ? [src.width, src.height] : imageSize(src.image);
+
+    const gpuTex = device.createTexture({
+      size: [width, height],
+      format: "rgba8unorm",
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+
+    if (src.kind === "pixels") {
+      device.queue.writeTexture(
+        { texture: gpuTex },
+        src.data,
+        { bytesPerRow: width * 4, rowsPerImage: height },
+        [width, height],
+      );
+    } else {
+      // copyExternalImageToTexture gère le flipY pour les images.
+      device.queue.copyExternalImageToTexture(
+        { source: src.image, flipY: texture.options.flipY ?? false },
+        { texture: gpuTex },
+        [width, height],
+      );
+    }
+
+    const bindGroup = this.makeTextureBindGroup(
+      device,
+      gpuTex.createView(),
+      device.createSampler(samplerDescriptor(texture.options)),
+    );
+    this.textureBindGroups.set(texture, bindGroup);
+    return bindGroup;
+  }
+
+  private makeTextureBindGroup(
+    device: GPUDevice,
+    view: GPUTextureView,
+    sampler: GPUSampler,
+  ): GPUBindGroup {
+    return device.createBindGroup({
+      layout: this.texLayout!,
+      entries: [
+        { binding: 0, resource: view },
+        { binding: 1, resource: sampler },
+      ],
+    });
+  }
+}
+
+/** Options de texture neutres -> descripteur de sampler WebGPU. */
+function samplerDescriptor(opts: TextureOptions): GPUSamplerDescriptor {
+  const filter: GPUFilterMode = opts.filter === "nearest" ? "nearest" : "linear";
+  const wrap: GPUAddressMode = opts.wrap === "clamp" ? "clamp-to-edge" : "repeat";
+  return { magFilter: filter, minFilter: filter, addressModeU: wrap, addressModeV: wrap };
+}
+
+/** Dimensions d'une source d'image (gère HTMLImageElement et les autres). */
+function imageSize(src: TexImageSource): [number, number] {
+  if (src instanceof HTMLImageElement) return [src.naturalWidth, src.naturalHeight];
+  const s = src as { width?: number; height?: number; displayWidth?: number; displayHeight?: number };
+  return [s.width ?? s.displayWidth ?? 1, s.height ?? s.displayHeight ?? 1];
 }
 
 /** Crée un GPUBuffer initialisé (taille alignée sur 4 octets, requis par WebGPU). */
