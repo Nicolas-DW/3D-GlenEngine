@@ -21,9 +21,12 @@ matériau uni, et un quad chargé via le loader glTF.
 
 **Contrôles caméra** (souris / trackpad) :
 
-- clic-glisser → orbite autour de la scène ;
-- glissement deux doigts (trackpad) → orbite ;
+- clic gauche + glisser → orbite (pivot) ;
+- molette du milieu + glisser, ou glissement deux doigts (trackpad) → déplacement (pan) ;
 - pincer (trackpad) ou Ctrl + molette → zoom.
+
+Sensibilités zoom / déplacement / rotation réglables dans la barre d'outils
+(section « Caméra »).
 
 ## Architecture
 
@@ -57,6 +60,11 @@ src/
 │   └── Rotator.ts          # démo : fait tourner l'objet
 ├── loaders/
 │   └── GltfLoader.ts       # importe des modèles glTF 2.0 (.gltf / .glb)
+├── experiences/
+│   ├── Experience.ts       # interface : start() / stop() une scène jouable
+│   └── MarblesExperience.ts# réceptacle de billes (en construction)
+├── ui/
+│   └── Sidebar.ts          # barre d'outils : expériences + réglages
 └── geometry/
     └── cube.ts             # génère un cube unité
 ```

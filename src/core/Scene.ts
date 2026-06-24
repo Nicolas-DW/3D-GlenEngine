@@ -13,6 +13,14 @@ export class Scene {
     return go;
   }
 
+  /** Retire un objet racine (utilisé pour décharger une expérience). */
+  remove(go: GameObject): boolean {
+    const i = this.roots.indexOf(go);
+    if (i < 0) return false;
+    this.roots.splice(i, 1);
+    return true;
+  }
+
   /** Itère sur tous les GameObjects de l'arbre (profondeur d'abord). */
   *traverse(): Generator<GameObject> {
     const stack = [...this.roots];

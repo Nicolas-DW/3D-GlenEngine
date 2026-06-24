@@ -6,8 +6,10 @@ import { Engine } from "./core/Engine";
 import { GameObject } from "./core/GameObject";
 import { createCube } from "./geometry/cube";
 import { buildGltf, type GltfJson } from "./loaders/GltfLoader";
+import { MarblesExperience } from "./experiences/MarblesExperience";
 import { Material } from "./render/Material";
 import { Texture } from "./render/Texture";
+import { createSidebar } from "./ui/Sidebar";
 import { Vec3 } from "./math/Vec3";
 
 // --- Bootstrap : on monte le moteur sur le canvas. ---
@@ -17,7 +19,8 @@ const engine = new Engine(canvas);
 // --- Caméra orbitale : tourne autour de l'origine à la souris / au trackpad. ---
 const cameraObject = new GameObject("Camera");
 cameraObject.addComponent(new Camera());
-cameraObject.addComponent(new OrbitController(canvas, { radius: 7, polar: 0.25 }));
+const orbit = new OrbitController(canvas, { radius: 7, polar: 0.25 });
+cameraObject.addComponent(orbit);
 engine.scene.add(cameraObject);
 
 // --- (1) Cube TEXTURÉ : damier généré en mémoire (démontre textures). ---
@@ -45,6 +48,35 @@ loadInlineGltfQuad().then((gltfRoot) => {
 });
 
 engine.start();
+
+// --- Barre d'outils : expériences + réglages caméra. ---
+const marbles = new MarblesExperience();
+const sensitivity = (label: string, set: (v: number) => void) => ({
+  label,
+  min: 0.1,
+  max: 3,
+  step: 0.1,
+  value: 1,
+  format: (v: number) => `${v.toFixed(1)}×`,
+  onInput: set,
+});
+createSidebar({
+  experiences: [
+    {
+      label: marbles.name,
+      launch: () => marbles.start(engine),
+      stop: () => marbles.stop(engine),
+    },
+  ],
+  settings: {
+    title: "Caméra",
+    sliders: [
+      sensitivity("Sensibilité zoom", (v) => (orbit.zoomSensitivity = v)),
+      sensitivity("Sensibilité déplacement", (v) => (orbit.panSensitivity = v)),
+      sensitivity("Sensibilité rotation", (v) => (orbit.rotateSensitivity = v)),
+    ],
+  },
+});
 
 // --- Helpers de démo. --------------------------------------------------------
 
