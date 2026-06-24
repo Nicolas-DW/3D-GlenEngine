@@ -8,7 +8,7 @@ import { PhysicsWorld, type Bounds } from "../physics/PhysicsWorld";
 import { Material } from "../render/Material";
 import type { Experience } from "./Experience";
 
-const COUNT = 120; // nombre de billes lâchées
+const COUNT = 300; // nombre de billes lâchées
 
 /**
  * Réceptacle de billes : une boîte ouverte dans laquelle tombent des billes
@@ -81,7 +81,7 @@ export class MarblesExperience implements Experience {
   private spawnMarbles(engine: Engine, world: PhysicsWorld, inner: number, top: number): void {
     const radius = 0.3;
     const mesh = createSphere(radius, 16, 12); // une seule géométrie, partagée
-    const cols = 5;
+    const cols = 6;
     const margin = 0.5;
     const spacing = (inner * 2 - margin * 2) / (cols - 1);
 

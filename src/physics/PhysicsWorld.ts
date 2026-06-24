@@ -16,8 +16,9 @@ export interface Bounds {
  * RigidBody ensemble (nécessaire pour les collisions entre billes).
  *
  * Pas de temps FIXE (sous-pas) : la simulation reste stable et reproductible
- * quel que soit le framerate. Collisions actuelles en O(n²) — suffisant pour
- * quelques centaines ; au-delà il faudra une broad phase (grille spatiale).
+ * quel que soit le framerate. Collisions bille-bille via une GRILLE SPATIALE
+ * (broad phase) : on ne teste que les billes des cellules voisines → ~O(n) au
+ * lieu de O(n²), ce qui débloque la montée en nombre.
  */
 export class PhysicsWorld extends Component {
   gravity = -9.81;
@@ -25,6 +26,8 @@ export class PhysicsWorld extends Component {
   damping = 0.999; // léger amortissement (aide à se stabiliser)
 
   private readonly bodies: RigidBody[] = [];
+  private maxRadius = 0;
+  private readonly grid = new Map<string, number[]>(); // cellule -> indices de billes
   private accumulator = 0;
   private readonly fixedStep = 1 / 120;
 
@@ -34,6 +37,7 @@ export class PhysicsWorld extends Component {
 
   add(body: RigidBody): void {
     this.bodies.push(body);
+    if (body.radius > this.maxRadius) this.maxRadius = body.radius;
   }
 
   override update(dt: number): void {
@@ -83,42 +87,85 @@ export class PhysicsWorld extends Component {
     else if (p.z + r > bd.maxZ) { p.z = bd.maxZ - r; if (v.z > 0) v.z = -v.z * e; }
   }
 
-  /** Collisions bille ↔ bille (toutes les paires). Masses supposées égales. */
+  /**
+   * Collisions bille ↔ bille via une grille spatiale (broad phase).
+   * Taille de cellule = diamètre max : deux billes qui se touchent sont
+   * forcément dans la même cellule ou une cellule adjacente → on ne teste que
+   * les 27 cellules voisines au lieu de toutes les paires.
+   */
   private collidePairs(): void {
-    const e = this.restitution;
     const list = this.bodies;
+    if (list.length < 2) return;
+    const cell = 2 * this.maxRadius || 1;
+    const grid = this.grid;
+    grid.clear();
+
+    // 1) Ranger chaque bille dans sa cellule.
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i].transform.position;
+      const key = cellKey(cellOf(p.x, cell), cellOf(p.y, cell), cellOf(p.z, cell));
+      const bucket = grid.get(key);
+      if (bucket) bucket.push(i);
+      else grid.set(key, [i]);
+    }
+
+    // 2) Pour chaque bille, ne tester que les voisines (cellules adjacentes).
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
-      const pa = a.transform.position;
-      for (let j = i + 1; j < list.length; j++) {
-        const b = list[j];
-        const pb = b.transform.position;
-        const dx = pb.x - pa.x;
-        const dy = pb.y - pa.y;
-        const dz = pb.z - pa.z;
-        const minDist = a.radius + b.radius;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 >= minDist * minDist || d2 < 1e-12) continue;
-
-        const dist = Math.sqrt(d2);
-        const nx = dx / dist;
-        const ny = dy / dist;
-        const nz = dz / dist;
-
-        // Séparer (chacune de la moitié du chevauchement).
-        const overlap = (minDist - dist) * 0.5;
-        pa.x -= nx * overlap; pa.y -= ny * overlap; pa.z -= nz * overlap;
-        pb.x += nx * overlap; pb.y += ny * overlap; pb.z += nz * overlap;
-
-        // Impulsion le long de la normale (masses égales).
-        const va = a.velocity;
-        const vb = b.velocity;
-        const vn = (vb.x - va.x) * nx + (vb.y - va.y) * ny + (vb.z - va.z) * nz;
-        if (vn > 0) continue; // déjà en train de se séparer
-        const imp = (-(1 + e) * vn) / 2;
-        va.x -= imp * nx; va.y -= imp * ny; va.z -= imp * nz;
-        vb.x += imp * nx; vb.y += imp * ny; vb.z += imp * nz;
+      const p = a.transform.position;
+      const cx = cellOf(p.x, cell);
+      const cy = cellOf(p.y, cell);
+      const cz = cellOf(p.z, cell);
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          for (let oz = -1; oz <= 1; oz++) {
+            const bucket = grid.get(cellKey(cx + ox, cy + oy, cz + oz));
+            if (!bucket) continue;
+            for (const j of bucket) {
+              if (j > i) this.resolvePair(a, list[j]); // chaque paire une seule fois
+            }
+          }
+        }
       }
     }
   }
+
+  /** Résolution d'une collision entre deux billes (masses égales). */
+  private resolvePair(a: RigidBody, b: RigidBody): void {
+    const pa = a.transform.position;
+    const pb = b.transform.position;
+    const dx = pb.x - pa.x;
+    const dy = pb.y - pa.y;
+    const dz = pb.z - pa.z;
+    const minDist = a.radius + b.radius;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 >= minDist * minDist || d2 < 1e-12) return;
+
+    const dist = Math.sqrt(d2);
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const nz = dz / dist;
+
+    // Séparer (chacune de la moitié du chevauchement).
+    const overlap = (minDist - dist) * 0.5;
+    pa.x -= nx * overlap; pa.y -= ny * overlap; pa.z -= nz * overlap;
+    pb.x += nx * overlap; pb.y += ny * overlap; pb.z += nz * overlap;
+
+    // Impulsion le long de la normale.
+    const va = a.velocity;
+    const vb = b.velocity;
+    const vn = (vb.x - va.x) * nx + (vb.y - va.y) * ny + (vb.z - va.z) * nz;
+    if (vn > 0) return; // déjà en train de se séparer
+    const imp = (-(1 + this.restitution) * vn) / 2;
+    va.x -= imp * nx; va.y -= imp * ny; va.z -= imp * nz;
+    vb.x += imp * nx; vb.y += imp * ny; vb.z += imp * nz;
+  }
+}
+
+function cellOf(coord: number, cell: number): number {
+  return Math.floor(coord / cell);
+}
+
+function cellKey(x: number, y: number, z: number): string {
+  return `${x},${y},${z}`;
 }
