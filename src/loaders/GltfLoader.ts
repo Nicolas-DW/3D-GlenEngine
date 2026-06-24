@@ -93,10 +93,7 @@ export interface GltfJson {
 // --- API publique. -----------------------------------------------------------
 
 /** Charge un modèle .gltf ou .glb depuis une URL et renvoie son GameObject racine. */
-export async function loadGltf(
-  gl: WebGL2RenderingContext,
-  url: string,
-): Promise<GameObject> {
+export async function loadGltf(url: string): Promise<GameObject> {
   const baseUrl = url.substring(0, url.lastIndexOf("/") + 1);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`glTF introuvable : ${url} (${res.status})`);
@@ -104,12 +101,12 @@ export async function loadGltf(
   if (url.toLowerCase().endsWith(".glb")) {
     const { json, bin } = parseGlb(await res.arrayBuffer());
     const buffers = await resolveBuffers(json, baseUrl, bin);
-    return buildGltf(gl, json, buffers, baseUrl);
+    return buildGltf(json, buffers, baseUrl);
   }
 
   const json = (await res.json()) as GltfJson;
   const buffers = await resolveBuffers(json, baseUrl, null);
-  return buildGltf(gl, json, buffers, baseUrl);
+  return buildGltf(json, buffers, baseUrl);
 }
 
 /**
@@ -117,7 +114,6 @@ export async function loadGltf(
  * Séparé de loadGltf pour pouvoir alimenter le loader sans réseau (tests, démo).
  */
 export async function buildGltf(
-  gl: WebGL2RenderingContext,
   gltf: GltfJson,
   buffers: ArrayBuffer[],
   baseUrl = "",
@@ -125,7 +121,7 @@ export async function buildGltf(
   // 1) Matériaux (peut charger des images -> async).
   const materials: Material[] = [];
   for (let i = 0; i < (gltf.materials?.length ?? 0); i++) {
-    materials[i] = await buildMaterial(gl, gltf, buffers, baseUrl, i);
+    materials[i] = await buildMaterial(gltf, buffers, baseUrl, i);
   }
   const defaultMaterial = new Material();
 
@@ -150,7 +146,7 @@ export async function buildGltf(
       // Plusieurs primitives = plusieurs MeshRenderer sur le MÊME GameObject :
       // c'est ainsi qu'un objet porte plusieurs matériaux.
       for (const prim of mesh.primitives) {
-        const geom = buildPrimitive(gl, gltf, buffers, prim);
+        const geom = buildPrimitive(gltf, buffers, prim);
         const mat = prim.material != null ? materials[prim.material] : defaultMaterial;
         go.addComponent(new MeshRenderer(geom, mat));
       }
@@ -172,7 +168,6 @@ export async function buildGltf(
 // --- Géométrie. --------------------------------------------------------------
 
 function buildPrimitive(
-  gl: WebGL2RenderingContext,
   gltf: GltfJson,
   buffers: ArrayBuffer[],
   prim: GltfPrimitive,
@@ -194,7 +189,7 @@ function buildPrimitive(
       ? readFloats(gltf, buffers, prim.attributes.TEXCOORD_0)
       : undefined;
 
-  return new Mesh(gl, positions, normals, indices, uvs);
+  return new Mesh(positions, normals, indices, uvs);
 }
 
 /** Lit un accesseur en Float32Array (POSITION / NORMAL / TEXCOORD). */
@@ -308,7 +303,6 @@ function computeNormals(positions: Float32Array, indices: Uint16Array | Uint32Ar
 // --- Matériaux & textures. ---------------------------------------------------
 
 async function buildMaterial(
-  gl: WebGL2RenderingContext,
   gltf: GltfJson,
   buffers: ArrayBuffer[],
   baseUrl: string,
@@ -322,7 +316,7 @@ async function buildMaterial(
   let texture: Texture | null = null;
   if (pbr.baseColorTexture) {
     const image = await resolveImage(gltf, buffers, baseUrl, pbr.baseColorTexture.index);
-    texture = Texture.fromImage(gl, image, { flipY: true });
+    texture = Texture.fromImage(image, { flipY: true });
   }
   return new Material(color, texture);
 }

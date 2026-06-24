@@ -12,7 +12,6 @@ import { Vec3 } from "./math/Vec3";
 // --- Bootstrap : on monte le moteur sur le canvas. ---
 const canvas = document.getElementById("app") as HTMLCanvasElement;
 const engine = new Engine(canvas);
-const gl = engine.renderer.gl;
 
 // --- Caméra : reculée pour voir les trois objets alignés. ---
 const cameraObject = new GameObject("Camera");
@@ -21,19 +20,19 @@ cameraObject.addComponent(new Camera());
 engine.scene.add(cameraObject);
 
 // --- (1) Cube TEXTURÉ : damier généré en mémoire (démontre textures). ---
-const checker = Texture.fromPixels(gl, 64, 64, makeCheckerboard(64), {
-  filter: gl.NEAREST,
+const checker = Texture.fromPixels(64, 64, makeCheckerboard(64), {
+  filter: "nearest",
   mipmap: false,
 });
 const texturedCube = new GameObject("CubeTexturé");
-texturedCube.addComponent(new MeshRenderer(createCube(gl), new Material([1, 1, 1], checker)));
+texturedCube.addComponent(new MeshRenderer(createCube(), new Material([1, 1, 1], checker)));
 texturedCube.addComponent(new Rotator());
 engine.scene.add(texturedCube);
 
 // --- (2) Cube à MATÉRIAU uni distinct (démontre plusieurs matériaux). ---
 const solidCube = new GameObject("CubeUni");
 solidCube.transform.position.set(2.2, 0, 0);
-solidCube.addComponent(new MeshRenderer(createCube(gl), new Material([0.95, 0.35, 0.3])));
+solidCube.addComponent(new MeshRenderer(createCube(), new Material([0.95, 0.35, 0.3])));
 solidCube.addComponent(new Rotator(new Vec3(0, -0.6, 0.3)));
 engine.scene.add(solidCube);
 
@@ -114,5 +113,5 @@ function loadInlineGltfQuad(): Promise<GameObject> {
     scene: 0,
   };
 
-  return buildGltf(gl, gltf, [buffer]);
+  return buildGltf(gltf, [buffer]);
 }

@@ -3,8 +3,9 @@ import { Mesh } from "../render/Mesh";
 /**
  * Crée un cube unité (centré, arêtes de longueur 1). Chaque face a ses propres
  * sommets pour porter une normale plane correcte (d'où 24 sommets, 36 indices).
+ * Renvoie de la DONNÉE pure : le backend de rendu la téléversera au GPU.
  */
-export function createCube(gl: WebGL2RenderingContext): Mesh {
+export function createCube(): Mesh {
   // 6 faces × 4 sommets. Pour chaque face : 4 positions puis sa normale.
   const positions = new Float32Array([
     // +X
@@ -56,5 +57,5 @@ export function createCube(gl: WebGL2RenderingContext): Mesh {
     indices[i + 3] = o; indices[i + 4] = o + 2; indices[i + 5] = o + 3;
   }
 
-  return new Mesh(gl, positions, normals, indices, uvs);
+  return new Mesh(positions, normals, indices, uvs);
 }
